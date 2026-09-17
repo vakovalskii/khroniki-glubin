@@ -304,3 +304,14 @@ test('новичок начинает в экипировке, которую м
     assert.ok(P.hp > 0 && P.mp > 0 && P.coins > 0, `${cls}: пустые начальные значения`);
   }
 });
+
+import { mapOffset } from '../src/map-view.js';
+test('миникарта: вперёд и вправо совпадают с экраном при любом повороте камеры', () => {
+  for (const yaw of [0, Math.PI / 2, Math.PI, -Math.PI / 2]) {
+    const forward = mapOffset(-Math.sin(yaw), -Math.cos(yaw), yaw);
+    const right = mapOffset(Math.cos(yaw), -Math.sin(yaw), yaw);
+    assert.ok(Math.abs(forward[0]) < 1e-8 && forward[1] < -0.99);
+    assert.ok(right[0] > 0.99 && Math.abs(right[1]) < 1e-8);
+  }
+  assert.deepEqual(mapOffset(30, -20, 0), [30, -20]); // большая карта: север сверху
+});

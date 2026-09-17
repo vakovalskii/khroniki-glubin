@@ -1,3 +1,4 @@
+import { mapOffset } from './map-view.js';
 import * as THREE from 'three';
 import { CLASSES, SKILLS, ITEMS, MOBS, SHOP, GRADES, SLOTS, SETS, xpToNext, MAX_LEVEL } from './data.js';
 import { calcStats, enchValue, wearError, migrate, SAFE_ENCH, ENCH_CHANCE } from './stats.js';
@@ -777,11 +778,11 @@ renderer.domElement.addEventListener('pointermove', (e) => {
   const px = t.x, py = t.y; t.x = e.clientX; t.y = e.clientY;
   if (touches.size === 1) {
     if (Math.hypot(t.x - t.x0, t.y - t.y0) > 10) touchDrag = true;
-    if (touchDrag) { orbDX += (px - t.x) * 1.4; orbDY += (py - t.y) * 1.4; }
+    if (touchDrag) { orbDX += (t.x - px) * 1.4; orbDY += (t.y - py) * 1.4; }
   } else if (touches.size === 2) {
     const [a, b] = [...touches.values()], d = Math.hypot(a.x - b.x, a.y - b.y), mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
     if (pinch0 > 0 && d > 0) zoomAcc += Math.log(pinch0 / d);
-    orbDX += (mid0.x - mid.x) * 1.4; orbDY += (mid0.y - mid.y) * 1.4;
+    orbDX += (mid.x - mid0.x) * 1.4; orbDY += (mid.y - mid0.y) * 1.4;
     pinch0 = d; mid0 = mid;
   }
 });
@@ -796,7 +797,7 @@ renderer.domElement.addEventListener('pointercancel', touchEnd);
 addEventListener('pointerup', (e) => { if (e.button === 2) rmb = false; });
 addEventListener('pointermove', (e) => {
   if (!rmb) return;
-  cam.yaw -= (e.clientX - lastX) * 0.006; cam.pitch = THREE.MathUtils.clamp(cam.pitch + (e.clientY - lastY) * 0.005, -0.35, 1.5);
+  cam.yaw += (e.clientX - lastX) * 0.006; cam.pitch = THREE.MathUtils.clamp(cam.pitch - (e.clientY - lastY) * 0.005, -0.35, 1.5);
   lastX = e.clientX; lastY = e.clientY;
 });
 // трекпад: два пальца — орбита, щипок (приходит как Ctrl+колесо) — зум; колесо мыши — зум
@@ -813,7 +814,7 @@ function applyCamInput(dt) {
   const kk = 1 - Math.exp(-dt * 22);
   const dx = orbDX * kk, dy = orbDY * kk, dz = zoomAcc * kk;
   orbDX -= dx; orbDY -= dy; zoomAcc -= dz;
-  cam.yaw -= dx * 0.005;
+  cam.yaw += dx * 0.005;
   cam.pitch = THREE.MathUtils.clamp(cam.pitch - dy * 0.004, -0.35, 1.5);
   cam.dist = THREE.MathUtils.clamp(cam.dist * Math.exp(dz), 4, 70);
 }
@@ -1294,7 +1295,7 @@ function drawMap(cv, big) {
   const x = cv.getContext('2d'), W = cv.width, H = cv.height;
   const inCrypt = hero.position.x > DUNGEON.x0 - 100;
   x.fillStyle = '#10141a'; x.fillRect(0, 0, W, H);
-  if (inCrypt) {
+  if (inCrypt && big) {
     const size = DUNGEON.cell * DUNGEON.n, k = W / size;
     x.fillStyle = '#2a2628'; x.fillRect(0, 0, W, H);
     for (const m of mobs.values()) if (!m.dead && m.obj.position.x > DUNGEON.x0 - 100) { x.fillStyle = m.def.boss ? '#c060ff' : '#c04040'; x.fillRect((m.obj.position.x - DUNGEON.x0) * k - 2, (m.obj.position.z - DUNGEON.z0) * k - 2, 4, 4); }
@@ -1304,15 +1305,16 @@ function drawMap(cv, big) {
   }
   const scale = big ? W / MAP : W / 300; // мини-карта — окрестность 300 м
   const cx = big ? 0 : hero.position.x, cz = big ? 0 : hero.position.z;
-  const P2 = (px, pz) => [(px - cx) * scale + W / 2, (pz - cz) * scale + H / 2];
+  const yaw = big ? 0 : cam.yaw;
+  const P2 = (px, pz) => { const [dx, dz] = mapOffset(px - cx, pz - cz, yaw); return [dx * scale + W / 2, dz * scale + H / 2]; };
   for (const z of ZONES) { const [a, b] = P2(z.x, z.z); x.fillStyle = `rgba(${z.ground.map((v) => (v * 255) | 0).join(',')},0.7)`; x.beginPath(); x.arc(a, b, z.r * scale, 0, 7); x.fill(); }
   for (const t of TOWNS) { const [a, b] = P2(t.x, t.z); x.fillStyle = '#d8cfb8'; x.beginPath(); x.arc(a, b, t.r * scale, 0, 7); x.fill(); if (big) { x.fillStyle = '#fff'; x.font = '12px sans-serif'; x.textAlign = 'center'; x.fillText(t.name, a, b - t.r * scale - 6); } }
   if (big) for (const z of ZONES) { const [a, b] = P2(z.x, z.z); x.fillStyle = '#fff'; x.font = '12px sans-serif'; x.textAlign = 'center'; x.fillText(`${z.name} (${z.lv})`, a, b); }
-  { const [a, b] = P2(CRYPT.x, CRYPT.z); x.fillStyle = '#9a70ff'; x.fillRect(a - 3, b - 3, 6, 6); if (big) { x.fillStyle = '#c0a0ff'; x.fillText('Склеп', a, b - 8); } }
+  { const [a, b] = P2(inCrypt ? dungeonExit.x : CRYPT.x, inCrypt ? dungeonExit.z : CRYPT.z); x.fillStyle = '#9a70ff'; x.fillRect(a - 3, b - 3, 6, 6); if (big) { x.fillStyle = '#c0a0ff'; x.fillText('Склеп', a, b - 8); } }
   if (!big) for (const m of mobs.values()) if (!m.dead && m.obj.visible) { const [a, b] = P2(m.obj.position.x, m.obj.position.z); x.fillStyle = m.def.aggro ? '#ff5050' : '#ffc060'; x.fillRect(a - 1.5, b - 1.5, 3, 3); }
   for (const n of npcs) { const [a, b] = P2(n.x, n.z); x.fillStyle = '#80d0ff'; x.fillRect(a - 2, b - 2, 4, 4); }
   const [a, b] = P2(hero.position.x, hero.position.z);
-  x.save(); x.translate(a, b); x.rotate(-hero.rotation.y + Math.PI);
+  x.save(); x.translate(a, b); x.rotate(-hero.rotation.y + Math.PI + yaw);
   x.fillStyle = '#fff'; x.beginPath(); x.moveTo(0, -6); x.lineTo(4, 5); x.lineTo(-4, 5); x.fill(); x.restore();
 }
 
