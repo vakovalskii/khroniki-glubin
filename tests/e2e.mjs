@@ -104,7 +104,7 @@ try {
     await G(() => { const g = window.__g; g.openNpc(g.npcs.find((n) => n.role === 'gatekeeper')); });
     await page.click('[data-tp=meadow]');
     expect(await zoneHas('Солнечные луга'), `зона: ${await page.textContent('#zone')}`);
-    await untilP(page, () => window.__g.P.coins === 390);
+    await untilP(page, () => window.__g.P.coins === 450);
   });
 
   // ближайший живой моб нужного вида — мобов присылает сервер, поэтому сперва ждём их

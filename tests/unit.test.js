@@ -243,7 +243,7 @@ test('заточка: до безопасного уровня всегда уд
   assert.ok(enchSucceeds(MAX_ENCH - 1, () => 0.01), 'удачный бросок должен срабатывать');
 });
 
-test('ИИ моба: агрится на игрока рядом, возвращается домой и лечится', () => {
+test('ИИ моба: агрится, возвращается домой без лечения по дороге', () => {
   const m = newMob(1, { mob: 'orc', x: 0, z: 0 }, seeded(3)); // орк агрессивный
   const hit = [];
   const ctx = { now: Date.now(), onHit: (mb, p) => hit.push(p.id), players: [{ id: 7, x: 5, z: 0, dead: false, inTown: false }] };
@@ -257,7 +257,7 @@ test('ИИ моба: агрится на игрока рядом, возвращ
   let cameHome = 0;
   for (let i = 0; i < 200 && !cameHome; i++) { mobStep(m, ctx, 0.1); if (m.state !== 'return' && m.state !== 'chase') cameHome = flatDist(m, m.home); }
   assert.ok(cameHome && cameHome < 2, `моб не дошёл до дома: ${cameHome}`);
-  assert.ok(m.hp > 1, 'моб не полечился на обратном пути');
+  assert.equal(m.hp, 1, 'моб не должен лечиться по дороге');
 });
 
 test('мирного моба не агрит близкий игрок', () => {
@@ -314,4 +314,30 @@ test('миникарта: вперёд и вправо совпадают с э�
     assert.ok(right[0] > 0.99 && Math.abs(right[1]) < 1e-8);
   }
   assert.deepEqual(mapOffset(30, -20, 0), [30, -20]); // большая карта: север сверху
+});
+
+import { heroDamage, leashDistance } from '../src/sim.js';
+test('PvE: урон героя ниже, высокий уровень моба усиливает штраф', () => {
+  assert.equal(heroDamage(100, 10, 10), 65);
+  assert.equal(heroDamage(100, 10, 14), 50);
+  assert.equal(heroDamage(100, 10, 16), 39);
+  assert.equal(heroDamage(0, 10, 10), 0);
+});
+test('моб: погоня 180 м, возврат без лечения, восстановление после паузы', () => {
+  const m = newMob(500, { mob: 'rabbit', x: 0, z: 0 }, seeded(8));
+  const ctx = { now: 10000, players: [{ id: 7, x: 105, z: 0, dead: false, inTown: false }], onHit() {} };
+  m.hp = m.def.hp / 4; m.state = 'chase'; m.target = 7; m.x = 100;
+  mobStep(m, ctx, 0); assert.equal(m.state, 'chase');
+  m.x = 181; ctx.players[0].x = 186;
+  mobStep(m, ctx, 0); assert.equal(m.state, 'return');
+  const hp = m.hp; mobStep(m, ctx, 0.1); assert.equal(m.hp, hp);
+  m.x = 0; m.z = 0; m.wanderT = 100;
+  mobStep(m, ctx, 0); assert.equal(m.state, 'idle'); assert.equal(m.hp, hp);
+  ctx.now = 14999; mobStep(m, ctx, 1); assert.equal(m.hp, hp);
+  ctx.now = 15000; mobStep(m, ctx, 1); assert.equal(m.hp, hp + m.def.hp * 0.02);
+  m.state = 'chase'; mobStep(m, ctx, 1); assert.equal(m.hp, hp + m.def.hp * 0.02);
+  assert.equal(leashDistance({ boss: true }), 140);
+});
+test('телепорты: новые цены едины для клиента и сервера', () => {
+  assert.deepEqual(TELEPORTS.map(t => t.cost), [0, 0, 20, 50, 100, 150]);
 });

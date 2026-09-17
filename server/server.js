@@ -8,7 +8,7 @@ import { openDb } from './accounts.js';
 import { zoneAt, TOWNS, DUNGEON, CRYPT, heightAt } from '../src/world-core.js';
 import { PVP, karmaForPk, karmaWashCost } from '../src/pvp.js';
 import { CLASSES, SKILLS, ITEMS } from '../src/data.js';
-import { calcDmg, missChance, evaChance, flatDist, clamp } from '../src/sim.js';
+import { heroDamage, calcDmg, missChance, evaChance, flatDist, clamp } from '../src/sim.js';
 import { createMobs } from './sim/mobs.js';
 import * as PL from './sim/player.js';
 
@@ -168,6 +168,7 @@ const alive = (t) => t && !t.dead;
 
 // урон мобу от игрока; событие видят все вокруг
 function damageMob(a, mb, dmg, crit, now) {
+  dmg = heroDamage(dmg, a.P.lvl, mb.def.lvl);
   const died = world.hit(mb, dmg, a);
   pushNear(a, { k: 'hit', m: mb.id, dmg, crit });
   if (!died) return;

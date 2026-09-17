@@ -226,10 +226,10 @@ export function buildProps(B = nullEmitter) {
 export const TELEPORTS = [
   { id: 'harbor', name: 'Светлая Гавань', x: TOWNS[0].x + 18, z: TOWNS[0].z + 22, cost: 0 },
   { id: 'ford', name: 'Каменный Брод', x: TOWNS[1].x + 18, z: TOWNS[1].z + 22, cost: 0 },
-  { id: 'meadow', name: 'Солнечные луга (1–9)', x: -260, z: 180, cost: 80 },
-  { id: 'forest', name: 'Сумрачный лес (10–17)', x: -20, z: 60, cost: 200 },
-  { id: 'waste', name: 'Выжженная пустошь (18–25)', x: 300, z: -160, cost: 400 },
-  { id: 'crypt', name: 'Катакомбы (18–28)', x: DUNGEON.x0 + DUNGEON.cell / 2, z: DUNGEON.z0 + DUNGEON.cell / 2, cost: 600 },
+  { id: 'meadow', name: 'Солнечные луга (1–9)', x: -260, z: 180, cost: 20 },
+  { id: 'forest', name: 'Сумрачный лес (10–17)', x: -20, z: 60, cost: 50 },
+  { id: 'waste', name: 'Выжженная пустошь (18–25)', x: 300, z: -160, cost: 100 },
+  { id: 'crypt', name: 'Катакомбы (18–28)', x: DUNGEON.x0 + DUNGEON.cell / 2, z: DUNGEON.z0 + DUNGEON.cell / 2, cost: 150 },
 ];
 
 // столкновения: круговые препятствия. Общая для клиента и сервера проверка шага.
