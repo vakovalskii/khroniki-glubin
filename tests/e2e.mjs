@@ -1,8 +1,11 @@
+import { buildProps } from '../src/world-core.js';
+import { MOBS } from '../src/data.js';
+import { contentStep } from './content.e2e.mjs';
 // Сквозной тест в браузере: npm run test:e2e (поднимает vite сам). Падает с кодом 1 при любой ошибке.
 import { chromium } from 'playwright';
 import { spawn } from 'node:child_process';
 
-const PORT = 5199, WS = 8791, URL = `http://localhost:${PORT}/?ws=ws://localhost:${WS}`;
+const PORT = +process.env.E2E_PORT || 5199, WS = +process.env.E2E_WS || 8791, URL = `http://localhost:${PORT}/?ws=ws://localhost:${WS}`;
 const server = spawn('npx', ['vite', '--port', String(PORT), '--strictPort'], { stdio: 'pipe' });
 import fs from 'node:fs';
 import os from 'node:os';
@@ -15,7 +18,7 @@ let failed = 0;
 async function step(name, fn) {
   const t0 = Date.now();
   try { await fn(); results.push(`  ✓ ${name} (${Date.now() - t0} мс)`); }
-  catch (e) { failed++; results.push(`  ✗ ${name}: ${e.message}`); }
+  catch (e) { failed++; console.error(e.stack); results.push(`  ✗ ${name}: ${e.message}`); }
 }
 const expect = (cond, msg) => { if (!cond) throw new Error(msg); };
 // профиль ведёт сервер: изменения приходят ответом, поэтому всегда ждём подтверждения
@@ -23,7 +26,7 @@ const untilP = (pg, fn, arg, ms = 8000) => pg.waitForFunction(fn, arg, { timeout
 
 try {
   for (let i = 0; i < 50; i++) { try { if ((await fetch(URL)).ok) break; } catch { /* ждём */ } await new Promise((r) => setTimeout(r, 200)); }
-  const browser = await chromium.launch({ channel: process.env.PW_CHANNEL || 'chrome', headless: process.env.HEADED ? false : true, slowMo: Number(process.env.SLOW || 0), args: ['--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
+  const browser = await chromium.launch({ ...(process.env.PW_CHANNEL ? { channel: process.env.PW_CHANNEL } : {}), headless: process.env.HEADED ? false : true, slowMo: Number(process.env.SLOW || 0), args: ['--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding', ...(process.env.E2E_RENDERER === 'metal' || (!process.env.E2E_RENDERER && process.platform === 'darwin') ? ['--use-angle=metal'] : ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'])] });
   const page = await (await browser.newContext({ viewport: { width: 1280, height: 800 } })).newPage();
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
@@ -74,6 +77,8 @@ try {
   await step('торговец: покупку проводит сервер', async () => {
     await G(() => { const g = window.__g, n = g.npcs.find((x) => x.role === 'merchant'); g.dev({ coins: 500, x: n.x + 2, z: n.z + 2 }); });
     await untilP(page, () => window.__g.P.coins === 500);
+    await page.waitForFunction(() => { const g = window.__g, n = g.npcs.find(n => n.role === 'merchant'); return Math.hypot(g.hero.position.x - n.x, g.hero.position.z - n.z) < 6; });
+    await wait(300); // сервер успевает получить положение после dev-переноса
     await G(() => window.__g.openNpc(window.__g.npcs.find((n) => n.role === 'merchant')));
     expect(await page.isVisible('#shop'), 'окно торговца не открылось');
     const n0 = await G(() => window.__g.P.inv.find((i) => i.id === 'potion_hp')?.n || 0);
@@ -102,7 +107,7 @@ try {
     await G(() => { const g = window.__g; g.openNpc(g.npcs.find((n) => n.role === 'gatekeeper')); });
     await page.click('[data-tp=meadow]');
     expect(await zoneHas('Солнечные луга'), `зона: ${await page.textContent('#zone')}`);
-    await untilP(page, () => window.__g.P.coins === 390);
+    await untilP(page, () => window.__g.P.coins === 450);
   });
 
   // ближайший живой моб нужного вида — мобов присылает сервер, поэтому сперва ждём их
@@ -226,7 +231,8 @@ try {
 
   await step('смерть и возрождение в городе', async () => {
     // агрессивные мобы живут в лесу и катакомбах — идём туда и ждём, пока сервер их пришлёт
-    await G(() => window.__g.dev({ x: 20, z: 10, lvl: 1 }));
+    const spawn = buildProps().spawns.find(s => s.mob === 'orc' && MOBS[s.mob].aggro);
+    await G(s => window.__g.dev({ x: s.x + 1, z: s.z + 1, lvl: 1 }), spawn);
     await page.waitForFunction(() => [...window.__g.mobs.values()].some((m) => m.def.aggro && !m.dead && m.obj.visible), null, { timeout: 20000 });
     const agro = await G(() => {
       const g = window.__g, h = g.hero.position;
@@ -397,11 +403,28 @@ try {
     // жрец: отмыв за деньги
     await PG(() => { const g = window.__g, n = g.npcs.find((x) => x.role === 'priest'); g.dev({ coins: 100000, x: n.x + 2, z: n.z + 2 }); });
     await untilP(phone, () => window.__g.P.coins === 100000);
+    await phone.waitForFunction(() => { const g = window.__g, n = g.npcs.find(n => n.role === 'priest'); return Math.hypot(g.hero.position.x - n.x, g.hero.position.z - n.z) < 6; });
+    await phone.waitForTimeout(300); // подтверждение положения на сервере
     await PG(() => window.__g.openNpc(window.__g.npcs.find((n) => n.role === 'priest')));
     await phone.tap('#wash');
     await phone.waitForFunction(() => window.__g.P.karma === 0, null, { timeout: 5000 });
+    // karma приходит в me, монеты — следующим сообщением you; ждём обе части ответа.
+    await untilP(phone, () => window.__g.P.coins < 100000);
     expect((await PG(() => window.__g.P.coins)) < 100000, 'деньги за отмыв не списаны');
   });
+
+  await step('камера: ПКМ вправо и вниз, миникарта после поворота', async () => {
+    const old = await G(() => ({ ...window.__g.cam }));
+    try {
+      await page.mouse.move(650, 310); await page.mouse.down({ button: 'right' });
+      await page.mouse.move(720, 350, { steps: 5 }); await page.mouse.up({ button: 'right' });
+      const cam = await G(() => ({ ...window.__g.cam }));
+      expect(cam.yaw > old.yaw, 'горизонтальная орбита инвертирована');
+      expect(cam.pitch < old.pitch, 'вертикальная орбита инвертирована');
+    } finally { await page.mouse.up({ button: 'right' }); await G(c => Object.assign(window.__g.cam, c), old); }
+  });
+
+  await step('контент: воин, анимации, профессии, питомец и группа на сервере', () => contentStep(browser, URL));
 
   await step('аккаунт: занятое имя, неверный пароль, вход с другого устройства', async () => {
     await phone.context().close(); // три WebGL-вкладки на программном рендере не успевают
