@@ -1,3 +1,6 @@
+import { effectMul } from './effects.js';
+import { spawnDef, mobSpeed } from './combat.js';
+import { rollLoot, COINS } from './loot.js';
 // Правила симуляции: урон, промахи, опыт, дроб, ИИ мобов, цены, заточка.
 // Без DOM и three.js — один и тот же код считает бой на сервере и проверяется юнит-тестами.
 // Случайность приходит аргументом rng, чтобы тесты были повторяемы.
@@ -20,7 +23,7 @@ export const missChance = (mobLvl, acc) => clamp(0.06 + (mobLvl + 33 - acc) * 0.
 export const evaChance = (mobLvl, eva) => clamp(0.05 + (eva - (mobLvl + 33)) * 0.01, 0.02, 0.3);
 
 export const MOB_ATK_CD = (def) => (def.boss ? 1.4 : 1.8);
-export const MOB_SPEED = (def) => 12 * (def.boss ? 0.8 : 1);
+export const MOB_SPEED = mobSpeed;
 export const mobRadius = (def) => (def.size || 1) * 0.9;
 
 // опыт с понижением за мобов сильно ниже игрока
@@ -30,9 +33,7 @@ export function xpForKill(mobDef, heroLvl) {
 }
 export const rollCoins = (mobDef, rng = Math.random) => irand(mobDef.coins[0], mobDef.coins[1], rng);
 export function rollDrops(mobDef, rng = Math.random) {
-  const out = [];
-  for (const [id, ch] of Object.entries(mobDef.drops || {})) if (rng() < ch) out.push(id);
-  return out;
+  return rollLoot(mobDef, mobDef.lvl, rng).filter(e => e.id !== COINS).flatMap(e => Array(e.n).fill(e.id));
 }
 export const xpLossOnDeath = (lvl, isPk) => Math.round(xpToNext(lvl) * (isPk ? 0.12 : 0.04));
 
@@ -68,6 +69,7 @@ export function obstaclesNear(x, z) {
 export function moveEntity(pos, dirX, dirZ, dist, radius) {
   pos.x += dirX * dist; pos.z += dirZ * dist;
   for (const o of obstaclesNear(pos.x, pos.z)) {
+    if (o.climb) continue;
     const dx = pos.x - o.x, dz = pos.z - o.z, d = Math.hypot(dx, dz), min = o.r + radius;
     if (d < min && d > 1e-4) { pos.x = o.x + dx / d * min; pos.z = o.z + dz / d * min; }
   }
@@ -80,9 +82,9 @@ export const flatDist = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
 
 // ---------- мобы ----------
 export function newMob(id, spawn, rng = Math.random) {
-  const def = MOBS[spawn.mob];
+  const def = spawnDef(MOBS[spawn.mob], spawn);
   return {
-    id, kind: spawn.mob, def,
+    id, kind: spawn.mob, def, spawn,
     home: { x: spawn.x, z: spawn.z },
     x: spawn.x, y: heightAt(spawn.x, spawn.z), z: spawn.z, r: rand(0, 6.28, rng),
     hp: def.hp, recoverAfter: 0, state: 'idle', target: null, atkCd: 0, wanderT: rand(1, 6, rng), dest: null,
@@ -95,14 +97,15 @@ export function newMob(id, spawn, rng = Math.random) {
 export function mobStep(m, ctx, dt) {
   if (m.dead) {
     if (ctx.now > m.respawnAt) {
-      m.dead = false; m.hp = m.def.hp; m.recoverAfter = 0; m.state = 'idle'; m.target = null;
+      m.dead = false; m.effects=[];m.stunUntil=0; m.hp = m.def.hp; m.recoverAfter = 0; m.state = 'idle'; m.target = null;
       m.x = m.home.x; m.z = m.home.z; m.y = heightAt(m.x, m.z); m.hitBy.clear();
     }
     return false;
   }
   m.moving = false;
+  if((m.stunUntil || 0)>ctx.now) return false;
   m.attackT = Math.max(0, m.attackT - dt * 3);
-  const radius = mobRadius(m.def), speed = MOB_SPEED(m.def);
+  const radius = mobRadius(m.def), speed = MOB_SPEED(m.def) * effectMul(m.effects || [], 'speed', ctx.now);
   // цель: та, что уже выбрана, иначе ближайший живой игрок вне города
   const cur = m.target != null ? ctx.players.find((p) => p.id === m.target) : null;
   let near = cur && !cur.dead && !cur.inTown ? cur : null, nd = near ? flatDist(m, near) : Infinity;
@@ -117,7 +120,7 @@ export function mobStep(m, ctx, dt) {
     }
     if (m.def.aggro && near && nd < 14) { m.state = 'chase'; m.target = near.id; }
     m.wanderT -= dt;
-    if (m.wanderT <= 0) { m.wanderT = rand(4, 10); m.dest = { x: m.home.x + rand(-12, 12), z: m.home.z + rand(-12, 12) }; m.state = 'wander'; }
+    if (m.wanderT <= 0) { m.wanderT = rand(4, 10); m.dest = { x: m.home.x + rand(-(m.spawn.wander || 5), m.spawn.wander || 5), z: m.home.z + rand(-(m.spawn.wander || 5), m.spawn.wander || 5) }; m.state = 'wander'; }
     if (m.state === 'wander' && m.dest) {
       const dx = m.dest.x - m.x, dz = m.dest.z - m.z, L = Math.hypot(dx, dz);
       if (L < 0.5) { m.state = 'idle'; m.dest = null; }
@@ -127,20 +130,20 @@ export function mobStep(m, ctx, dt) {
     if (!near || nd > 220 || flatDist(m, m.home) > leashDistance(m.def)) { m.state = 'return'; m.target = null; }
     else {
       m.target = near.id;
-      const reach = 2 + radius;
+      const reach = m.def.ranged?.max || 2 + radius + (m.def.reach || 0);
       if (nd > reach) {
         const dx = near.x - m.x, dz = near.z - m.z, L = Math.hypot(dx, dz) || 1;
-        moveEntity(m, dx / L, dz / L, speed * dt, radius); m.r = Math.atan2(dx, dz); m.moving = true;
+        steerMob(m,near,speed*dt,radius,ctx); m.r = Math.atan2(dx, dz); m.moving = true;
       } else {
         m.r = Math.atan2(near.x - m.x, near.z - m.z);
         m.atkCd -= dt;
-        if (m.atkCd <= 0) { m.atkCd = MOB_ATK_CD(m.def); m.attackT = 1; ctx.onHit(m, near); }
+        if (m.atkCd <= 0) { m.atkCd = (m.def.ranged?.cd || MOB_ATK_CD(m.def)) / (m.attackRate || 1); m.attackT = 1; ctx.onHit(m, near); }
       }
     }
   } else if (m.state === 'return') {
     const dx = m.home.x - m.x, dz = m.home.z - m.z, L = Math.hypot(dx, dz);
     if (L < 1) m.state = 'idle';
-    else { moveEntity(m, dx / L, dz / L, speed * 1.4 * dt, radius); m.r = Math.atan2(dx, dz); m.moving = true; }
+    else { steerMob(m,m.home,speed*1.4*dt,radius,ctx); m.r = Math.atan2(dx, dz); m.moving = true; }
   }
   return true;
 }
@@ -151,3 +154,13 @@ export const crystalsFor = (grade, cur) => ({ d: 2, c: 6, b: 15 }[grade] * (cur 
 // удачна ли попытка усиления: до SAFE_ENCH — всегда
 export const enchSucceeds = (cur, rng = Math.random) => cur < SAFE_ENCH || rng() < ENCH_CHANCE;
 export { MAX_ENCH, SAFE_ENCH, ENCH_CHANCE, MAX_LEVEL, xpToNext, ITEMS, MOBS };
+
+function steerMob(m,goal,step,radius,ctx){
+  let point=goal;
+  if(ctx.nav&&!ctx.nav.lineClear(m,goal,radius)){
+    if(!m.path||ctx.now>(m.pathAt||0)||flatDist(goal,m.pathGoal||goal)>5){m.path=ctx.nav.findPath(m,goal,radius)||[];m.pathGoal={x:goal.x,z:goal.z};m.pathAt=ctx.now+1000;}
+    while(m.path.length&&flatDist(m,m.path[0])<1)m.path.shift();if(m.path.length)point=m.path[0];
+  }else m.path=null;
+  const dx=point.x-m.x,dz=point.z-m.z,d=Math.hypot(dx,dz)||1;
+  moveEntity(m,dx/d,dz/d,Math.min(step,d),radius);
+}

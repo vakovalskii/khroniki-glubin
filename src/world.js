@@ -1,3 +1,4 @@
+import { CAMP_SHAPES, flameMesh } from './camp-render.js';
 // Рендер мира: рельеф, вода, слитая геометрия построек. Расстановка и вся математика — в world-core.js.
 import * as THREE from 'three';
 import { TEX, worldUV, COLOR_TEX } from './tex.js';
@@ -15,6 +16,7 @@ const KIND_SCALE = { brick: 0.25, cobble: 0.2, roof: 0.4, roof_red: 0.22, roof_b
 const M = (c, kind = 'plain') => (MATS[c + kind] ||= mat(COLOR_TEX.has(kind) ? 0xffffff : c, TEX[kind] ? { map: TEX[kind]() } : {}));
 
 const SHAPES = {
+  ...Object.fromEntries(Object.entries(CAMP_SHAPES).map(([key, geo]) => ['camp_' + key, geo])),
   box: new THREE.BoxGeometry(1, 1, 1),
   cone4: new THREE.ConeGeometry(0.75, 1, 4).rotateY(Math.PI / 4),
   cyl: new THREE.CylinderGeometry(0.5, 0.5, 1, 10),
@@ -27,7 +29,7 @@ function bucketAdder() {
   const buckets = new Map();
   let kind = 'plain';
   const add = (shape, color, x, y, z, ry = 0, sx = 1, sy = 1, sz = 1) => {
-    const g = SHAPES[shape].clone(); g.scale(sx, sy, sz); if (ry) g.rotateY(ry); g.translate(x, y, z);
+    const g = SHAPES[shape.shape || shape].clone(); if (shape.shape) { g.rotateX(shape.rx); g.rotateZ(shape.rz); } g.scale(sx, sy, sz); if (ry) g.rotateY(ry); g.translate(x, y, z);
     const k = `${color}|${kind}`; if (!buckets.has(k)) buckets.set(k, []); buckets.get(k).push(g.index ? g.toNonIndexed() : g);
   };
   const build = (parent) => {
@@ -42,7 +44,7 @@ function bucketAdder() {
 
 // рельеф: 6 цветных тайлов (луг, лес, пустошь, утоптанная земля, скала, снег), веса — в вершинах
 const LAYERS = ['t_grass', 't_forest', 't_sand', 't_dirt', 't_rock', 't_snow'];
-const ZONE_LAYER = { meadow: 0, forest: 1, waste: 2 };
+const ZONE_LAYER = { meadow: 0, forest: 1, waste: 2, orccamp: 3, highlands: 0, marsh: 1 };
 function groundWeights(x, z, h, slope) {
   const w = [0, 0, 0, 0, 0, 0];
   // размытие границ зон: несколько точек вокруг, с шумом на краях
@@ -129,10 +131,11 @@ function buildTerrain(scene) {
 export function buildWorld(scene) {
   const B = bucketAdder();
   const ground = buildTerrain(scene);
-  const { npcs, spawns } = buildProps(B);
+  const { npcs, spawns, camp } = buildProps(B);
+  camp.flameMesh = flameMesh(camp.flame); scene.add(camp.flameMesh);
   B.build(scene);
   // факелы катакомб — тёплый свет
   const { x0, z0, cell, n } = DUNGEON;
   for (let k = 0; k < 6; k++) { const l = new THREE.PointLight(0xff9040, 60, 70, 1.5); l.position.set(x0 + ((k % 3) + 0.5) * (n * cell / 3), 7, z0 + ((k / 3 | 0) + 0.5) * (n * cell / 2)); scene.add(l); }
-  return { ground, npcs, spawns };
+  return { ground, npcs, spawns, camp };
 }

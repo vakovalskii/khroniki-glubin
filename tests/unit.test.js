@@ -21,7 +21,7 @@ test('ссылки в данных валидны', () => {
     assert.ok(m.hp > 0 && m.xp > 0 && m.coins[0] <= m.coins[1], `${id}: характеристики`);
   }
   for (const id of SHOP) { assert.ok(ITEMS[id], `магазин: ${id}`); assert.ok(ITEMS[id].price > 0, `магазин: цена ${id}`); }
-  for (const z of ZONES) for (const [m] of z.mobs) assert.ok(MOBS[m], `${z.id}: нет моба ${m}`);
+  for (const z of ZONES) for (const [m] of z.mobs || []) assert.ok(MOBS[m], `${z.id}: нет моба ${m}`);
 });
 
 test('у каждого класса есть умение первого уровня', () => {
@@ -84,8 +84,8 @@ test('катакомбы: все клетки достижимы, босс в д
 });
 
 test('уровни мобов соответствуют зонам', () => {
-  const lv = { meadow: [1, 9], forest: [10, 17], waste: [18, 25] };
-  for (const z of ZONES) for (const [m] of z.mobs) { const l = MOBS[m].lvl; assert.ok(l >= lv[z.id][0] - 1 && l <= lv[z.id][1], `${m} ${l} в ${z.id}`); }
+  const lv = Object.fromEntries(ZONES.map(z => [z.id, z.lv.split('–').map(Number)]));
+  for (const z of ZONES) for (const [m] of z.mobs || []) { const l = MOBS[m].lvl; assert.ok(l >= lv[z.id][0] - 1 && l <= lv[z.id][1], `${m} ${l} в ${z.id}`); }
 });
 
 // ---- экипировка, комплекты, заточка ----
@@ -225,7 +225,7 @@ test('добыча и монеты — в границах таблицы моб
   for (let i = 1; i < 30; i++) {
     const c = rollCoins(mob, seeded(i));
     assert.ok(c >= mob.coins[0] && c <= mob.coins[1], `монеты вне диапазона: ${c}`);
-    for (const id of rollDrops(mob, seeded(i))) assert.ok(mob.drops[id], `выпало не из таблицы: ${id}`);
+    for (const id of rollDrops(mob, seeded(i))) assert.ok([...(mob.mats || []).map(e => e[0]), ...(Array.isArray(mob.loot) ? mob.loot : [mob.loot]).filter(Boolean).flatMap(g => g.items.map(e => e[0])), 'soul_shard'].includes(id), `выпало не из таблицы: ${id}`);
   }
   assert.deepEqual(rollDrops(mob, () => 0.999), [], 'при неудачном броске ничего не падает');
 });
@@ -339,5 +339,5 @@ test('моб: погоня 180 м, возврат без лечения, вос�
   assert.equal(leashDistance({ boss: true }), 140);
 });
 test('телепорты: новые цены едины для клиента и сервера', () => {
-  assert.deepEqual(TELEPORTS.map(t => t.cost), [0, 0, 20, 50, 100, 150]);
+  assert.deepEqual(TELEPORTS.map(t => t.cost), [0, 0, 25, 37, 37, 62, 20, 50, 100, 87, 150]);
 });

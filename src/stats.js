@@ -1,5 +1,6 @@
 // Расчёт характеристик персонажа: класс, уровень, атрибуты, экипировка, заточка, комплекты, вес. Без DOM — проверяется юнит-тестами.
-import { CLASSES, ITEMS, SETS, SLOTS } from './data.js';
+import { MOVE_SCALE } from './movement.js';
+import { CLASSES, ITEMS, SETS, SLOTS, PROFESSIONS } from './data.js';
 
 export const MAX_ENCH = 16;
 export const SAFE_ENCH = 3;
@@ -14,6 +15,15 @@ export function enchValue(it, key, e = 0) {
   if (!v || !e || (key !== 'patk' && key !== 'matk' && key !== 'pdef' && key !== 'mdef')) return v;
   const step = Math.max(1, Math.round(v * (it.slot === 'weapon' ? 0.06 : 0.05)));
   return v + step * (Math.min(e, SAFE_ENCH) + 2 * Math.max(0, e - SAFE_ENCH));
+}
+
+// цена продажи торговцу: трофеи целиком, остальное — 40%; заточка поднимает цену (выше безопасной — вдвое быстрее)
+export function sellPrice(it, e = 0) {
+  if (!it) return 0;
+  const base = Math.round((it.price || 4000) * (it.loot ? 1 : 0.4));
+  if (!e || !it.slot || it.grade === 'none') return base;
+  const k = 1 + 0.2 * Math.min(e, SAFE_ENCH) + 0.4 * Math.max(0, e - SAFE_ENCH);
+  return Math.round(base * k);
 }
 
 // какие комплекты собраны полностью
@@ -39,7 +49,7 @@ export function calcStats(P, buffs = [], now = 0) {
     pdef: B.pdef + G.pdef * L, mdef: (B.mdef + G.mdef * L) * m(A.men, 30),
     aspd: B.aspd * m(A.dex, 30), speed: B.speed * (1 + (A.dex - 30) * 0.004), crit: B.crit + (A.dex - 30) * 0.002,
     cast: m(A.wit, 20), acc: Math.sqrt(A.dex) * 6 + P.lvl, eva: Math.sqrt(A.dex) * 6 + P.lvl,
-    range: c.range,
+    range: ITEMS[P.equip.weapon]?.range ?? c.range, // лук задаёт свою дальность
   };
   // экипировка
   for (const [sl, id] of Object.entries(P.equip)) {
@@ -56,21 +66,40 @@ export function calcStats(P, buffs = [], now = 0) {
     s.maxHp += b.hp || 0; s.maxMp += b.mp || 0; s.patk += b.patk || 0; s.matk += b.matk || 0;
     s.pdef += b.pdef || 0; s.mdef += b.mdef || 0; s.speed += b.speed || 0; s.crit += b.crit || 0; s.cast += b.cast || 0;
   }
+  // профессия: множители и прибавка к дальности
+  const pr = PROFESSIONS[P.prof];
+  for (const [k, v] of Object.entries(pr?.bonus || {})) s[k] *= v;
+  if (pr?.polearmRange && ITEMS[P.equip.weapon]?.polearm) s.range += pr.polearmRange;
   // вес: перегруз больше 70% — медленнее бег и восстановление
   s.load = weightOf(P); s.cap = Math.round(40 + A.con * 1.2);
   s.regen = 1;
   if (s.load > s.cap * 0.7) { s.speed *= 0.6; s.regen = 0.5; }
-  for (const b of buffs) if (b.until > now) s[b.stat] *= b.mul;
+  for (const b of buffs) if (b.until > now) {
+    s[b.stat] *= b.mul;
+    for (const [k, v] of Object.entries(b.also || {})) s[k] *= v;
+  }
+  s.speed *= MOVE_SCALE;
   s.maxHp = Math.round(s.maxHp); s.maxMp = Math.round(s.maxMp);
   return s;
+}
+
+// вид оружия: bow — лук (щит с ним не надеть — twoHand), polearm — древковое, staff — посох (прочее двуручное), sword — одноручное
+export function weaponKind(it) {
+  if (it?.slot !== 'weapon') return null;
+  if (it.bow) return 'bow';
+  if (it.polearm) return 'polearm';
+  return it.twoHand ? 'staff' : 'sword';
 }
 
 // можно ли надеть: уровень и ограничения класса
 export function wearError(P, it) {
   if (!it?.slot) return 'Это нельзя надеть';
   if (it.lvl && P.lvl < it.lvl) return `${it.name}: нужен уровень ${it.lvl}`;
-  if (P.cls === 'warrior' && it.twoHand) return 'Воин не владеет посохом';
-  if (P.cls === 'warrior' && it.robe) return 'Воин не носит мантии';
+  const k = weaponKind(it);
+  if (k === 'bow' && !(P.cls === 'warrior' && P.prof === 'archer')) return 'Луки — только для Лучника';
+  if (k === 'polearm' && P.cls !== 'warrior') return 'Древковым оружием владеет только воин';
+  if (k === 'staff' && P.cls === 'warrior') return 'Воин не владеет посохом';
+  if (it.robe && P.cls === 'warrior') return 'Воин не носит мантии';
   return null;
 }
 
@@ -102,8 +131,14 @@ export function unequipSlot(P, sl) {
 
 // старые сохранения: слоты и заточка
 export function migrate(P) {
-  P.enc ??= {};
+  if (!P.equip || typeof P.equip !== 'object' || Array.isArray(P.equip)) P.equip = {};
+  if (!P.enc || typeof P.enc !== 'object' || Array.isArray(P.enc)) P.enc = {};
+  P.inv = (Array.isArray(P.inv) ? P.inv : []).filter(e => e && Object.hasOwn(ITEMS, e.id) && Number.isSafeInteger(e.n) && e.n > 0);
+  for (const [sl, id] of Object.entries(P.equip)) {
+    if (!SLOTS.some(s => s.id === sl) || (id && !Object.hasOwn(ITEMS, id))) { delete P.equip[sl]; delete P.enc[sl]; }
+  }
   for (const s of SLOTS) if (!(s.id in P.equip)) P.equip[s.id] = null;
+  for (const s of SLOTS) if (!P.equip[s.id]) delete P.enc[s.id];
   P.pvp ??= 0;
   return P;
 }

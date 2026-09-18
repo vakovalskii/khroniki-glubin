@@ -1,3 +1,6 @@
+import { buildProps } from '../src/world-core.js';
+import { MOBS } from '../src/data.js';
+import { contentStep } from './content.e2e.mjs';
 // Сквозной тест в браузере: npm run test:e2e (поднимает vite сам). Падает с кодом 1 при любой ошибке.
 import { chromium } from 'playwright';
 import { spawn } from 'node:child_process';
@@ -228,7 +231,8 @@ try {
 
   await step('смерть и возрождение в городе', async () => {
     // агрессивные мобы живут в лесу и катакомбах — идём туда и ждём, пока сервер их пришлёт
-    await G(() => window.__g.dev({ x: 20, z: 10, lvl: 1 }));
+    const spawn = buildProps().spawns.find(s => s.mob === 'orc' && MOBS[s.mob].aggro);
+    await G(s => window.__g.dev({ x: s.x + 1, z: s.z + 1, lvl: 1 }), spawn);
     await page.waitForFunction(() => [...window.__g.mobs.values()].some((m) => m.def.aggro && !m.dead && m.obj.visible), null, { timeout: 20000 });
     const agro = await G(() => {
       const g = window.__g, h = g.hero.position;
@@ -419,6 +423,8 @@ try {
       expect(cam.pitch < old.pitch, 'вертикальная орбита инвертирована');
     } finally { await page.mouse.up({ button: 'right' }); await G(c => Object.assign(window.__g.cam, c), old); }
   });
+
+  await step('контент: воин, анимации, профессии, питомец и группа на сервере', () => contentStep(browser, URL));
 
   await step('аккаунт: занятое имя, неверный пароль, вход с другого устройства', async () => {
     await phone.context().close(); // три WebGL-вкладки на программном рендере не успевают

@@ -15,8 +15,9 @@ export const COLOR_TEX = new Set(['cobble', 'dbrick', 'dfloor', 'roof_blue', 'ro
 const gen = (name, fallback) => () => (GEN.includes(name) ? make(name) : TEX[fallback]());
 const loader = typeof document !== 'undefined' ? new THREE.TextureLoader() : null;
 function setup(t, repeat) {
-  t.magFilter = THREE.NearestFilter;
-  t.minFilter = THREE.NearestMipmapLinearFilter;
+  // Сохраняем детали готовых тайлов без крупных пикселей при приближении.
+  t.magFilter = THREE.LinearFilter;
+  t.minFilter = THREE.LinearMipmapLinearFilter;
   t.anisotropy = 4;
   if (repeat) t.wrapS = t.wrapT = THREE.RepeatWrapping;
   t.colorSpace = THREE.SRGBColorSpace;

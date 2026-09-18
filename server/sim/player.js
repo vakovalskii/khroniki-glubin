@@ -1,3 +1,7 @@
+import { regenMul, sitError } from '../../src/combat.js';
+import { migrateGrowth, changeProf, learnSkill, skillsOf, skillLv, skillAt, skillGearError } from '../../src/growth.js';
+import { townOk } from '../../src/skills.js';
+import { sellPrice as gearSellPrice } from '../../src/stats.js';
 // Персонаж на сервере: профиль, сумка, экипировка, магазин, заточка, опыт и смерть.
 // Клиент ничего из этого не считает — он только присылает команды и рисует события.
 import { CLASSES, ITEMS, SKILLS, SHOP, MAX_LEVEL, xpToNext } from '../../src/data.js';
@@ -18,7 +22,7 @@ export function newChar(name, cls) {
     equip: { weapon: c === 'mage' ? 'staff_novice' : 'sword_novice', armor: 'armor_cloth', legs: 'legs_cloth' },
     enc: {}, home: t.id, x: t.x, z: t.z - 12,
   };
-  migrate(P);
+  migrate(P); migrateGrowth(P);
   const s = calcStats(P);
   P.hp = s.maxHp; P.mp = s.maxMp;
   return P;
@@ -27,7 +31,7 @@ export function newChar(name, cls) {
 // сейв из базы → рабочий профиль. Всё, что не проходит проверку, заменяется новым персонажем.
 export function loadChar(name, save) {
   if (!save || typeof save !== 'object' || save.v !== SAVE_VERSION || !CLASSES[save.cls]) return newChar(name, save?.cls);
-  const P = migrate({ ...save, name });
+  const P = migrateGrowth(migrate({ ...save, name }));
   P.lvl = clamp(P.lvl | 0 || 1, 1, MAX_LEVEL);
   P.xp = Math.max(0, +P.xp || 0);
   P.coins = Math.max(0, Math.round(+P.coins || 0));
@@ -180,7 +184,7 @@ export function cmdSell(a, npcs, idx, n) {
   const e = a.P.inv[idx | 0]; const it = ITEMS[e?.id];
   if (!it) return say(a, 'Нет такой вещи', 'bad');
   n = clamp(n | 0 || 1, 1, e.n);
-  const gain = sellPrice(it) * n;
+  const gain = gearSellPrice(it, e.e || 0) * n;
   e.n -= n; if (e.n <= 0) a.P.inv.splice(idx | 0, 1);
   a.P.coins += gain;
   a.dirty = true; say(a, `Продано: ${it.name}${n > 1 ? ` ×${n}` : ''} за ${gain} мон.`, 'good');
@@ -198,21 +202,22 @@ export function cmdTeleport(a, npcs, id) {
 // ---------- умения ----------
 // Проверки те же, что были на клиенте, но теперь решающие: мана, кулдаун, уровень, город.
 export function skillError(a, id, now) {
-  const sk = SKILLS[id];
-  if (!sk) return 'Нет такого умения';
-  if (a.dead || a.cast) return 'Сейчас нельзя';
-  if (!CLASSES[a.P.cls].skills.includes(id)) return 'Это умение не вашего класса';
+  if (!SKILLS[id]) return 'Нет такого умения';
+  const sk = skillAt(id, skillLv(a.P, id));
+  if (a.dead || a.cast || now<(a.stunUntil||0)) return 'Сейчас нельзя';
+  if (!skillsOf(a.P).includes(id) || !skillLv(a.P, id)) return 'Это умение не изучено';
+  const gear = skillGearError(a.P, sk); if (gear) return gear;
   if (a.P.lvl < sk.lvl) return `${sk.name}: нужен уровень ${sk.lvl}`;
   if ((a.cds[id] || 0) > now) return 'Умение ещё не готово';
   if (a.P.mp < sk.mp) return 'Недостаточно маны';
-  if (inTown(a) && sk.kind !== 'heal' && sk.kind !== 'buff') return 'В городе сражаться нельзя';
+  if (inTown(a) && !townOk(sk)) return 'В городе сражаться нельзя';
   return null;
 }
 
 // восстановление здоровья и маны; в городе быстрее
 export function regen(a, dt) {
   if (a.dead) return;
-  const s = statsOf(a), k = inTown(a) ? 4 : 1;
+  const s = statsOf(a), k = regenMul({town:inTown(a),sitting:a.sitting,combat:Date.now()<(a.combatUntil||0)});
   a.P.hp = Math.min(s.maxHp, a.P.hp + s.maxHp * 0.006 * k * s.regen * dt);
   a.P.mp = Math.min(s.maxMp, a.P.mp + s.maxMp * 0.012 * k * s.regen * dt);
 }
@@ -221,5 +226,15 @@ export function regen(a, dt) {
 export const profileOf = (a) => ({
   ...a.P, hp: Math.round(a.P.hp), mp: Math.round(a.P.mp),
   x: Math.round(a.x * 100) / 100, z: Math.round(a.z * 100) / 100,
-  karma: a.karma, pk: a.pk, dead: a.dead,
+  karma: a.karma, pk: a.pk, dead: a.dead, sitting: !!a.sitting,
 });
+
+// Профессии и SP меняет только сервер и только рядом с наставником.
+export function cmdMentor(a, npcs, kind, id) {
+  if (a.dead || a.cast || !npcNear(a, npcs, 'mentor')) return say(a, 'Подойдите к наставнику', 'bad');
+  const err = kind === 'profession' ? changeProf(a.P, id) : learnSkill(a.P, id);
+  if (err) return say(a, err, 'bad');
+  a.dirty = true; say(a, kind === 'profession' ? 'Профессия выбрана' : 'Умение улучшено', 'good');
+}
+
+export function cmdSit(a,now){const err=sitError({dead:a.dead,combat:now<(a.combatUntil||0),casting:!!a.cast,stunned:now<(a.stunUntil||0)});if(err)return say(a,err,'bad');a.sitting=!a.sitting;a.dirty=true;}

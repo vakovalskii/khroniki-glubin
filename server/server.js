@@ -1,3 +1,10 @@
+import { createGroups } from './sim/groups.js';
+import { createGroundLoot } from './sim/ground-loot.js';
+import { createCompanions } from './sim/companions.js';
+import { makeDebuff, makeSlow, makeDot, makeHot, applyEffect, tickEffects, effectMul } from '../src/effects.js';
+import { needsEnemy, coneTargets, dashPoint, townOk } from '../src/skills.js';
+import { arrowFor, shotFor, shotCost, SHOT_MUL } from '../src/growth.js';
+import { skillAt, skillLv, killReward } from '../src/growth.js';
 // WS-сервер «Хроник Глубин»: авторитетная симуляция мира.
 // Сервер владеет прогрессом, мобами и боем; клиент присылает намерения и рисует результат.
 // Запуск: node server/server.js (PORT — 8790, DB — файл SQLite). Прод: systemd realms-ws, nginx /ws.
@@ -29,6 +36,9 @@ const players = new Map();
 let seq = 0;
 
 const world = createMobs();
+const companions = createCompanions();
+const groundLoot=createGroundLoot();
+const groups=createGroups(players,(p,m)=>send(p,m));
 const cryptDoor = { x: CRYPT.x, z: CRYPT.z + 8.5 };
 const dungeonExit = { x: DUNGEON.x0 + DUNGEON.cell / 2, z: DUNGEON.z0 + DUNGEON.cell / 2 };
 
@@ -42,7 +52,7 @@ const matKind = (it) => (!it ? 'cloth' : it.set === 'chain' ? 'chain' : it.set =
 function lookOf(P) {
   const g = (sl) => ITEMS[P.equip[sl]], w = g('weapon'), a = g('armor');
   return {
-    cls: P.cls, lvl: P.lvl, w: w ? w.color : null, staff: !!w?.twoHand, ench: P.enc.weapon || 0,
+    cls: P.cls, lvl: P.lvl, w: w ? w.color : null, staff: !!w?.twoHand && !w?.bow && !w?.polearm, bow: !!w?.bow, polearm: !!w?.polearm, ench: P.enc.weapon || 0,
     body: a && a.grade !== 'none' ? a.color : CLASSES[P.cls].color, robe: !!a?.robe || (P.cls === 'mage' && !a), mat: matKind(a),
     gear: { head: g('head')?.color ?? null, legs: g('legs')?.color ?? null, gloves: g('gloves')?.color ?? null, feet: g('feet')?.color ?? null, shield: g('shield')?.color ?? null,
       helmKind: g('head')?.set ?? null, shieldKind: g('shield') ? (g('shield').grade === 'd' ? 'wood' : 'plate') : null, legKind: matKind(g('legs')) },
@@ -81,16 +91,19 @@ wss.on('connection', (ws, req) => {
         if (now - p.stT > 1000) { p.stT = now; p.stN = 0; }
         if (++p.stN > 25) return;
         const x = num(m.x), z = num(m.z);
+        if (a.dead || now < (a.stunUntil || 0)) { send(p, { t: 'fix', x: a.x, z: a.z }); return; }
         const s = PL.statsOf(a, now), dt = Math.min(1, (now - (a.stAt || now)) / 1000) + 0.15;
         if (now > (a.warpUntil || 0) && flatDist(a, { x, z }) > s.speed * 1.8 * dt + 2) {
           send(p, { t: 'fix', x: a.x, z: a.z }); // рывок быстрее бега — возвращаем назад
           return;
         }
+        if(flatDist(a,{x,z})>.1 && a.sitting) { a.sitting=false; a.dirty=true; }
         a.stAt = now; a.x = x; a.z = z; a.y = num(m.y, 1e4); a.r = num(m.r, 10); a.anim = num(m.a, 255) | 0;
         checkDoors(p, a);
         return;
       }
       // выбор цели и автоатака: hold — просто взять на прицел, не нападая
+      case 'pinvite': case 'paccept': case 'pdecline': case 'pleave': case 'pkick': case 'plead': case 'pchat': groups.handle(a,m,now); return;
       case 'atk': {
         if (a.dead) return;
         if (m.id == null) { a.attacking = false; a.target = null; return; }
@@ -98,6 +111,11 @@ wss.on('connection', (ws, req) => {
         a.attacking = !m.hold;
         return;
       }
+      case 'pick': groundLoot.pick(a, m.uid | 0, now); return;
+      case 'sit': PL.cmdSit(a, now); return;
+      case 'petfollow': companions.command(a.id, !!m.follow); return;
+      case 'shots': if (m.school === 'p' || m.school === 'm') { a.P.shots[m.school] = !!m.enabled; a.dirty = true; } return;
+      case 'profession': case 'learn': return PL.cmdMentor(a, world.npcs, m.t, String(m.id || ''));
       case 'skill': return onSkill(p, a, String(m.id || ''), now);
       case 'use': return PL.cmdUse(a, String(m.id || ''));
       case 'equip': return PL.cmdEquip(a, m.idx | 0, m.slot);
@@ -114,6 +132,7 @@ wss.on('connection', (ws, req) => {
         if (m.lvl != null) a.P.lvl = clamp(m.lvl | 0, 1, 40);
         if (m.hp != null) a.P.hp = num(m.hp, 1e6);
         if (m.item) PL.addItem(a.P, String(m.item), Math.max(1, m.n | 0));
+        if (m.sp != null) a.P.sp=Math.max(0, m.sp|0);
         if (m.xp != null) PL.gainXp(a, num(m.xp, 1e7) | 0);
         a.dirty = true;
         return;
@@ -168,6 +187,7 @@ const alive = (t) => t && !t.dead;
 
 // урон мобу от игрока; событие видят все вокруг
 function damageMob(a, mb, dmg, crit, now) {
+  a.combatUntil=now+6000;a.sitting=false;
   dmg = heroDamage(dmg, a.P.lvl, mb.def.lvl);
   const died = world.hit(mb, dmg, a);
   pushNear(a, { k: 'hit', m: mb.id, dmg, crit });
@@ -175,10 +195,10 @@ function damageMob(a, mb, dmg, crit, now) {
   const topId = world.kill(mb, now);
   const winner = players.get(topId)?.a || a;
   const rw = world.rewardFor(mb, winner.P.lvl);
-  PL.gainXp(winner, rw.xp);
+  for(const share of groups.reward(winner,mb)){ PL.gainXp(share.a,share.xp);share.a.P.sp=(share.a.P.sp||0)+share.sp;share.a.dirty=true; }
   winner.P.coins += rw.coins;
   winner.P.kills++;
-  for (const id of rw.drops) { PL.addItem(winner.P, id); winner.out.push({ k: 'loot', id }); }
+  groundLoot.spawn(winner,mb,rw.drops,now);
   winner.out.push({ k: 'kill', mob: mb.kind, name: mb.def.name, xp: rw.xp, coins: rw.coins, boss: !!mb.def.boss });
   winner.dirty = true;
   // убийство моба смывает карму PK
@@ -189,11 +209,13 @@ function damageMob(a, mb, dmg, crit, now) {
 
 // урон игроку от моба
 function damagePlayer(mb, a, now) {
+  a.combatUntil=now+6000;a.sitting=false;
   if (a.dead) return;
   const s = PL.statsOf(a, now);
   if (Math.random() < evaChance(mb.def.lvl, s.eva)) return a.out.push({ k: 'hurt', dodge: true });
-  const { d } = calcDmg(mb.def.patk, s.pdef, 1, 0.05);
+  const { d } = calcDmg(mb.def.patk * (mb.powerBuff?.until > now ? mb.powerBuff.mul : 1) * effectMul(mb.effects || [], 'patk', now), mb.def.ranged?.school === 'm' ? s.mdef : s.pdef, 1, 0.05);
   a.P.hp -= d;
+  if(mb.def.stun && Math.random()<mb.def.stun.chance){a.stunUntil=now+mb.def.stun.sec*1000;a.cast=null;a.out.push({k:'stun',sec:mb.def.stun.sec});}
   a.out.push({ k: 'hurt', dmg: d, from: mb.id });
   if (a.P.hp <= 0) { PL.killPlayer(a, mb.def.name); onPlayerDied(a, null); }
 }
@@ -216,12 +238,13 @@ function damageActor(a, v, atk, mul, school, critChance, now) {
 function onSkill(p, a, id, now) {
   const err = PL.skillError(a, id, now);
   if (err) return PL.say(a, err, 'bad');
-  const sk = SKILLS[id], s = PL.statsOf(a, now);
-  if (sk.kind === 'dmg') {
+  const sk = skillAt(id, skillLv(a.P, id)), s = PL.statsOf(a, now);
+  if (needsEnemy(sk)) {
     const t = targetPos(a.target);
     if (!alive(t)) return PL.say(a, 'Нет цели', 'bad');
     if (flatDist(a, t) > sk.range + targetRadius(a.target) + LAG_M) return PL.say(a, 'Цель слишком далеко', 'bad');
   }
+  if (sk.needBow && !PL.takeItem(a.P, arrowFor(a.P.equip.weapon))) return PL.say(a, 'Нет подходящих стрел', 'bad');
   a.P.mp -= sk.mp; a.cds[id] = now + sk.cd * 1000; a.dirty = true;
   a.out.push({ k: 'cd', id, cd: sk.cd });
   if (sk.cast) { a.cast = { id, t: sk.cast / s.cast, target: a.target }; a.out.push({ k: 'cast', id, t: sk.cast / s.cast }); return; }
@@ -229,29 +252,51 @@ function onSkill(p, a, id, now) {
 }
 
 function applySkill(a, id, ref, now) {
-  const sk = SKILLS[id], s = PL.statsOf(a, now);
+  const sk = skillAt(id, skillLv(a.P, id)), s = PL.statsOf(a, now);
+  if (a.dead || now < (a.stunUntil || 0) || PL.inTown(a) && !townOk(sk)) return;
+  if (sk.kind === 'summon') { if (companions.summon(a, sk.pet, s, now)) pushNear(a, {k:'cast_fx',id}); return; }
+  if (sk.kind === 'hot') { const ally=actorOf(ref),who=ally&&!ally.dead&&groups.members(a).includes(ally)&&flatDist(a,ally)<30?ally:a;who.effects = applyEffect(who.effects || [], makeHot(id, sk.hot, PL.statsOf(who,now).maxHp, now, a.id)); return; }
+  if (sk.kind === 'debuff' || sk.kind === 'dot') {
+    const t = targetPos(ref); if (!alive(t) || flatDist(a,t)>sk.range+targetRadius(ref)+LAG_M || PL.inTown(a)) return;
+    if(ref.p != null) { PL.say(a,'Для этого эффекта выберите моба'); return; }
+    t.effects = applyEffect(t.effects || [], sk.kind === 'dot' ? makeDot(id, sk.dot, s.matk, now, a.id) : makeDebuff(id, sk, now, a.id));
+    world.hit(t,0,a);a.combatUntil=now+6000;
+    pushNear(a,{k:'cast_fx',id,to:ref}); return;
+  }
   if (sk.kind === 'dmg') {
     const t = targetPos(ref);
     if (!alive(t) || flatDist(a, t) > sk.range + targetRadius(ref) + LAG_M + 2) return;
     const atk = sk.school === 'm' ? s.matk : s.patk, crit = Math.random() < s.crit + 0.05 ? 1 : 0;
     pushNear(a, { k: 'cast_fx', id, to: ref });
-    if (ref.m != null) { const r = calcDmg(atk, t.def.pdef * (sk.school === 'm' ? 0.8 : 1), sk.mul, crit); damageMob(a, t, r.d, r.crit, now); }
+    if (ref.m != null) {
+      if(sk.dash) { const pos=dashPoint(a,t,2+world.radiusOf(t),sk.range); if(pos) { PL.place(a,pos.x,pos.z); a.warpUntil=now+500; } }
+      const r = calcDmg(atk, t.def.pdef * (sk.school === 'm' ? 0.8 : 1), sk.mul * charge(a,sk.school,sk.mp), crit);
+      damageMob(a,t,r.d,r.crit,now);
+      if(sk.stun) t.stunUntil=now+sk.stun*1000;
+      if(sk.slow) t.effects=applyEffect(t.effects||[],makeSlow(id,sk.slow,now,a.id));
+      if(sk.drain) { const heal=Math.round(heroDamage(r.d,a.P.lvl,t.def.lvl)*sk.drain); a.P.hp=Math.min(s.maxHp,a.P.hp+heal);a.dirty=true;a.out.push({k:'heal',kind:'hp',amount:heal,skill:id}); }
+    }
     else damageActor(a, t, atk, sk.mul, sk.school, crit, now);
     a.attacking = true;
   } else if (sk.kind === 'heal') {
-    const amt = Math.round(s.maxHp * sk.amount);
-    a.P.hp = Math.min(s.maxHp, a.P.hp + amt); a.dirty = true;
-    a.out.push({ k: 'heal', kind: 'hp', amount: amt, skill: id });
+    const ally=actorOf(ref), recipient=ally&&!ally.dead&&groups.members(a).includes(ally)&&flatDist(a,ally)<30?ally:a;
+    const amt = Math.round(PL.statsOf(recipient,now).maxHp * sk.amount);
+    recipient.P.hp = Math.min(PL.statsOf(recipient,now).maxHp, recipient.P.hp + amt); recipient.dirty = true;
+    recipient.out.push({ k: 'heal', kind: 'hp', amount: amt, skill: id });
   } else if (sk.kind === 'buff') {
-    a.buffs.push({ stat: sk.stat, mul: sk.mul, until: now + sk.dur * 1000, name: sk.name });
-    a.out.push({ k: 'buff', id, dur: sk.dur });
+    for(const who of (sk.target==='party'?groups.members(a).filter(b=>!b.dead&&flatDist(a,b)<30):[a])){for (const [stat,mul] of Object.entries({[sk.stat]:sk.mul,...sk.also})) who.buffs.push({ stat, mul, until: now + sk.dur * 1000, name: sk.name });who.out.push({ k: 'buff', id, dur: sk.dur });who.dirty=true;}
   } else if (sk.kind === 'aoe') {
     const atk = sk.school === 'm' ? s.matk : s.patk;
     let n = 0;
     pushNear(a, { k: 'cast_fx', id });
+    const center = sk.around === 'target' ? targetPos(ref) : a;
+    if(!center || sk.around === 'target' && flatDist(a,center)>sk.range+targetRadius(ref)+LAG_M) return;
+    const candidates = world.list.filter(m=>!m.dead);
+    const selected = sk.cone ? new Set(coneTargets(a,a.r,candidates.map(m=>({x:m.x,z:m.z,r:world.radiusOf(m)})),{radius:sk.radius,cone:sk.cone,maxTargets:sk.maxTargets}).map(i=>candidates[i])) : null;
+    const shot = charge(a,sk.school,sk.mp);
     for (const mb of world.list) {
-      if (mb.dead || flatDist(mb, a) > sk.radius + world.radiusOf(mb)) continue;
-      const r = calcDmg(atk, mb.def.pdef * (sk.school === 'm' ? 0.8 : 1), sk.mul, s.crit);
+      if (mb.dead || flatDist(mb, center) > sk.radius + world.radiusOf(mb) || selected && !selected.has(mb)) continue;
+      const r = calcDmg(atk, mb.def.pdef * (sk.school === 'm' ? 0.8 : 1), sk.mul * shot, s.crit);
       damageMob(a, mb, r.d, r.crit, now); n++;
     }
     // по площади задеваем только флагнутых и PK (или того, кого бьём)
@@ -267,13 +312,16 @@ function applySkill(a, id, ref, now) {
 // автоатака: сервер сам отбивает удары, пока цель в радиусе
 function autoAttack(a, dt, now) {
   a.atkTimer -= dt;
-  if (!a.attacking || a.dead || a.cast) return;
+  if (!a.attacking || a.dead || a.cast || now<(a.stunUntil||0)) return;
   const t = targetPos(a.target);
   if (!alive(t)) { a.attacking = false; return; }
   const s = PL.statsOf(a, now);
   if (flatDist(a, t) > s.range + targetRadius(a.target) + LAG_M) return; // клиент ещё идёт к цели
   if (PL.inTown(a)) { a.attacking = false; return PL.say(a, 'В городе сражаться нельзя', 'bad'); }
   if (a.atkTimer > 0) return;
+  const arrow = arrowFor(a.P.equip.weapon);
+  if (arrow && !PL.takeItem(a.P, arrow)) { a.attacking=false;return PL.say(a,'Нет подходящих стрел','bad'); }
+  const shot=charge(a,'p');
   a.atkTimer = 1 / s.aspd;
   const mage = a.P.cls === 'mage';
   if (a.target.p != null) {
@@ -281,9 +329,9 @@ function autoAttack(a, dt, now) {
     damageActor(a, t, mage ? s.matk * 0.6 : s.patk, 1, mage ? 'm' : 'p', crit, now);
     return;
   }
-  if (mage) { const r = calcDmg(s.matk * 0.6, t.def.pdef, 1, s.crit); return damageMob(a, t, r.d, r.crit, now); }
+  if (mage) { const r = calcDmg(s.matk * 0.6, t.def.pdef, shot, s.crit); return damageMob(a, t, r.d, r.crit, now); }
   if (Math.random() < missChance(t.def.lvl, s.acc)) return pushNear(a, { k: 'miss', m: t.id });
-  const r = calcDmg(s.patk, t.def.pdef, 1, s.crit);
+  const r = calcDmg(s.patk, t.def.pdef, shot, s.crit);
   damageMob(a, t, r.d, r.crit, now);
 }
 
@@ -399,11 +447,21 @@ setInterval(() => {
   const list = actors();
   // мобы
   const view = list.map((a) => ({ id: a.id, x: a.x, z: a.z, dead: a.dead, inTown: PL.inTown(a) }));
-  world.tick(dt, view, now, (mb, pv) => { const a = players.get(pv.id)?.a; if (a) damagePlayer(mb, a, now); });
+  for(const p of companions.list.values()) view.push({...p,dead:p.hp<=0,inTown:false});
+  world.tick(dt, view, now, (mb, pv) => { if(pv.pet) {const pet=companions.list.get(pv.id);if(pet) pet.hp-=calcDmg(mb.def.patk,pet.s.pdef).d;return;} const a = players.get(pv.id)?.a; if (a) damagePlayer(mb, a, now); }, (m,fx)=>{for(const peer of players.values())if(peer.a&&flatDist(peer.a,m)<VIEW)peer.a.out.push({k:'mob_fx',...fx});});
+  for(const mb of world.list) if(!mb.dead) for(const eff of [...(mb.effects||[])]) {
+    const tick=tickEffects([eff],now); const owner=players.get(eff.from)?.a;
+    if(tick.dmg && owner && !owner.dead) damageMob(owner,mb,calcDmg(tick.dmg,mb.def.pdef).d,false,now);
+    mb.effects=mb.effects.flatMap(e=>e===eff?tick.list:[e]);
+  }
+  companions.tick(dt,now,list,world,damageMob);
+  groundLoot.tick(list,now);
+  groups.cleanup();
   guardsTick(now);
   // игроки
   for (const a of list) {
     PL.regen(a, dt);
+    if(!a.dead) { const tick=tickEffects(a.effects||[],now);a.effects=tick.list;if(tick.heal) { a.P.hp=Math.min(PL.statsOf(a,now).maxHp,a.P.hp+tick.heal);a.dirty=true; } }
     if (a.flagUntil && a.flagUntil <= now) { a.flagUntil = 0; sendMe(a); }
     if (a.cast) {
       a.cast.t -= dt;
@@ -428,8 +486,10 @@ setInterval(() => {
     const mobs = world.snapshotFor(a, VIEW, now);
     // впервые увиденный моб: клиенту нужен его вид, чтобы построить модель
     const fresh = [];
-    for (const row of mobs) if (!p.knownMobs.has(row[0])) { p.knownMobs.add(row[0]); fresh.push([row[0], world.byId.get(row[0]).kind]); }
+    for (const row of mobs) if (!p.knownMobs.has(row[0])) { p.knownMobs.add(row[0]); fresh.push([row[0], world.byId.get(row[0]).kind, world.byId.get(row[0]).spawn]); }
     if (fresh.length) send(p, { t: 'mobs', n: fresh });
+    send(p,{t:'pets',list:companions.snapshot(a)});
+    send(p,{t:'ground',items:groundLoot.snapshot(a,now)});
     send(p, { t: 'snap', ts: now, o, m: mobs, me: { hp: Math.round(a.P.hp), mp: Math.round(a.P.mp), x: +a.x.toFixed(2), z: +a.z.toFixed(2), dead: a.dead } });
     if (a.out.length) { send(p, { t: 'ev', e: a.out }); a.out = []; }
     if (a.dirty) {
@@ -454,3 +514,10 @@ setInterval(() => { for (const p of players.values()) store(p); }, 30_000);
 // пинг, чтобы nginx не рвал простаивающие соединения
 setInterval(() => { for (const p of players.values()) if (p.ws.readyState === 1) p.ws.ping(); }, 25000);
 console.log(`realms-ws :${PORT}, аккаунтов: ${acc.count()}, мобов: ${world.list.length}`);
+
+function charge(a, school, mp=0) {
+  if(!a.P.shots?.[school]) return 1;
+  const id=shotFor(a.P.equip.weapon,school), n=shotCost(school,mp);
+  if(!id || !PL.takeItem(a.P,id,n)) return 1;
+  a.dirty=true;return SHOT_MUL[school];
+}
