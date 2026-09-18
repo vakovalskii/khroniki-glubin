@@ -52,7 +52,7 @@ const matKind = (it) => (!it ? 'cloth' : it.set === 'chain' ? 'chain' : it.set =
 function lookOf(P) {
   const g = (sl) => ITEMS[P.equip[sl]], w = g('weapon'), a = g('armor');
   return {
-    cls: P.cls, lvl: P.lvl, w: w ? w.color : null, staff: !!w?.twoHand && !w?.bow && !w?.polearm, bow: !!w?.bow, polearm: !!w?.polearm, ench: P.enc.weapon || 0,
+    cls: P.cls, race: P.race || 'human', lvl: P.lvl, w: w ? w.color : null, staff: !!w?.twoHand && !w?.bow && !w?.polearm, bow: !!w?.bow, polearm: !!w?.polearm, ench: P.enc.weapon || 0,
     body: a && a.grade !== 'none' ? a.color : CLASSES[P.cls].color, robe: !!a?.robe || (P.cls === 'mage' && !a), mat: matKind(a),
     gear: { head: g('head')?.color ?? null, legs: g('legs')?.color ?? null, gloves: g('gloves')?.color ?? null, feet: g('feet')?.color ?? null, shield: g('shield')?.color ?? null,
       helmKind: g('head')?.set ?? null, shieldKind: g('shield') ? (g('shield').grade === 'd' ? 'wood' : 'plate') : null, legKind: matKind(g('legs')) },
@@ -284,6 +284,7 @@ function applySkill(a, id, ref, now) {
     recipient.P.hp = Math.min(PL.statsOf(recipient,now).maxHp, recipient.P.hp + amt); recipient.dirty = true;
     recipient.out.push({ k: 'heal', kind: 'hp', amount: amt, skill: id });
   } else if (sk.kind === 'buff') {
+    pushNear(a,{k:'remote_skill',id});
     for(const who of (sk.target==='party'?groups.members(a).filter(b=>!b.dead&&flatDist(a,b)<30):[a])){for (const [stat,mul] of Object.entries({[sk.stat]:sk.mul,...sk.also})) who.buffs.push({ stat, mul, until: now + sk.dur * 1000, name: sk.name });who.out.push({ k: 'buff', id, dur: sk.dur });who.dirty=true;}
   } else if (sk.kind === 'aoe') {
     const atk = sk.school === 'm' ? s.matk : s.patk;
@@ -480,7 +481,7 @@ setInterval(() => {
     for (const q of list) {
       if (q === a || flatDist(a, q) > VIEW) continue;
       if (!p.known.has(q.id)) { p.known.add(q.id); send(p, { t: 'look', id: q.id, name: q.name, look: q.look }); }
-      o.push([q.id, +q.x.toFixed(2), +q.y.toFixed(2), +q.z.toFixed(2), +q.r.toFixed(2), q.anim | 0, Math.round((q.P.hp / PL.statsOf(q, now).maxHp) * 100), status(q)]);
+      o.push([q.id, +q.x.toFixed(2), +q.y.toFixed(2), +q.z.toFixed(2), +q.r.toFixed(2), (q.anim & ~8) | (q.dead ? 8 : 0), Math.round((q.P.hp / PL.statsOf(q, now).maxHp) * 100), status(q)]);
     }
     for (const id of p.known) if (!players.has(id)) p.known.delete(id);
     const mobs = world.snapshotFor(a, VIEW, now);

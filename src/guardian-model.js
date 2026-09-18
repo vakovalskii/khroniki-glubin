@@ -42,6 +42,7 @@ export function attachGuardian(root, character) {
     if (!(h > 0)) throw new Error('Модель без высоты');
     holder = new THREE.Group(); holder.scale.setScalar(2.2 / h); model.position.y -= bounds.min.y;
     model.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; o.frustumCulled = false; } });
+    if (root.userData.remote) model.traverse(o => { o.userData.remote = root.userData.remote; });
     holder.add(model); root.add(holder);
     mixer = new THREE.AnimationMixer(model);
     actions = Object.fromEntries(gltf.animations.map(c => [c.name, mixer.clipAction(c)]));

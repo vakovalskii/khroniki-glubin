@@ -422,7 +422,7 @@ function netConnect() {
   ws.onclose = () => {
     if (net.ws !== ws) return;
     net.ok = false; net.authed = false;
-    for (const r of remotes.values()) scene.remove(r.obj);
+    for (const r of remotes.values()) { r.obj.userData.disposeGuardian?.(); scene.remove(r.obj); }
     remotes.clear();
     if (net.kicked) return;
     if (!P) startReady();
@@ -451,15 +451,18 @@ function onNet(m) {
   if (m.t === 'look') {
     let r = remotes.get(m.id);
     const cls = m.look?.cls || 'warrior';
-    if (r && r.cls !== cls) { scene.remove(r.obj); r = null; }
+    if (r && (r.cls !== cls || r.look?.race !== m.look?.race)) { r.obj.userData.disposeGuardian?.(); scene.remove(r.obj); r = null; }
     if (!r) {
       const obj = buildHero(CLASSES[cls]); obj.visible = false; scene.add(obj);
       r = { id: m.id, obj, cls, isPlayer: true, radius: 0.6, k: 0, dead: false, to: null, a: 0, hp: 100, seen: 0, st: { moving: false, attackT: 0, casting: false } };
       obj.traverse((o) => { o.userData.remote = r; });
       remotes.set(m.id, r);
     }
+    const previousLevel = r.look?.lvl;
     r.name = m.name; r.look = m.look;
     if (m.look) applyLook(r.obj, m.look);
+    if (!r.obj.userData.guardian) attachGuardian(r.obj, m.look || { cls });
+    if (previousLevel != null && m.look?.lvl > previousLevel) r.obj.userData.levelUp?.({ ...r.st, dead: r.dead, inCombat: performance.now() < (r.st.combatUntil || 0) });
   }
   if (m.t === 'snap') {
     const now = performance.now();
@@ -505,7 +508,7 @@ function onNet(m) {
   if (m.t === 'ev') for (const e of m.e) onEvent(e);
   // сервер не принял перемещение — возвращаемся туда, где он нас видит
   if (m.t === 'fix') { hero.position.set(m.x, heightAt(m.x, m.z), m.z); dest = null; }
-  if (m.t === 'leave') { const r = remotes.get(m.id); if (r) { scene.remove(r.obj); remotes.delete(m.id); if (target === r) { target = null; stopAttack(); } } }
+  if (m.t === 'leave') { const r = remotes.get(m.id); if (r) { r.obj.userData.disposeGuardian?.(); scene.remove(r.obj); remotes.delete(m.id); if (target === r) { target = null; stopAttack(); } } }
   if (m.t === 'me') {
     const was = P?.karma || 0;
     if (P) { P.karma = m.karma; P.pk = m.pk; P.pvp = m.pvp; }
@@ -558,11 +561,15 @@ const objOf = (e) => (e.m != null ? mobs.get(e.m) : e.p != null ? remotes.get(e.
 function onEvent(e) {
   if(e.k==='mob_fx'){const p=new THREE.Vector3(e.x,heightAt(e.x,e.z),e.z);ringFx(p,e.r||3,e.color||0x9050ff);if(e.text)banner(e.text);return;}
   if(e.k==='stun'){heroSt.stunUntil=performance.now()+e.sec*1000;heroSt.stunned=true;dest=null;return;}
+  if (e.k === 'remote_skill') { const r=remotes.get(e.by); if(r){r.st.skillPulse=(r.st.skillPulse||0)+1;r.st.skillAnimation=e.id==='battle_cry'?'Skill01':'Skill03';} return; }
   if (e.k === 'msg') return log(e.text, e.cls);
   if (e.k === 'cd') { cds[e.id] = performance.now() + e.cd * 1000; return; }
   if (e.k === 'hit' || e.k === 'miss') {
     const t = objOf(e); if (!t) return;
     const mine = !e.by;
+    const attacker = remotes.get(e.by);
+    if (attacker) { attacker.st.attackT=1; attacker.st.combatUntil=performance.now()+6000; }
+    if (t.isPlayer) t.st.combatUntil=performance.now()+6000;
     if (mine) { heroSt.attackT = 1; heroSt.combatUntil = performance.now() + 6000; }
     if (e.k === 'miss') return floatText(t.obj.position, 'Промах', '#aaaaaa');
     if (t.isMob) { t.flash = 0.12; t.st.hitT = 1; }
@@ -625,6 +632,8 @@ function onEvent(e) {
     return;
   }
   if (e.k === 'cast_fx') {
+    const remote=remotes.get(e.by);
+    if(remote){remote.st.skillPulse=(remote.st.skillPulse||0)+1;remote.st.skillAnimation='Skill03';remote.st.combatUntil=performance.now()+6000;}
     const sk = SKILLS[e.id], t = e.to ? objOf({ m: e.to.m, p: e.to.p }) : null;
     if (sk.kind === 'aoe') {
       const src = e.by != null ? remotes.get(e.by)?.obj.position : hero.position;
@@ -654,11 +663,14 @@ function updateRemotes(dt, t) {
     if (now - r.seen > 1500) r.obj.visible = false;
     if (!r.obj.visible || !r.buf?.length) continue;
     const o = r.obj;
+    const x=o.position.x,z=o.position.z;
     lerpEntity(r, rt, dt);
+    r.st.travelSpeed=Math.min(20,Math.hypot(o.position.x-x,o.position.z-z)/Math.max(dt,.001));
+    r.st.dead=r.dead;
     r.st.moving = !!(r.a & 1); r.st.casting = !!(r.a & 4);
     r.st.attackT = Math.max(0, r.st.attackT - dt * 3);
     o.rotation.z += ((r.a & 8 ? Math.PI / 2 : 0) - o.rotation.z) * Math.min(1, dt * 8);
-    o.userData.anim(t, r.st);
+    o.userData.anim(t, r.st, dt);
   }
   if (net.ok && t - net.lastSt > 0.1) {
     net.lastSt = t;
