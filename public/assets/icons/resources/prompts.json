@@ -1,0 +1,53 @@
+{
+  "tool": "built-in image_gen",
+  "icons": [
+    {
+      "id": "bone",
+      "prompt": "One isolated inventory item PNG with genuinely transparent alpha background. Subject: a weathered ivory animal femur bone, chunky rounded joints and slender shaft, diagonal. Hand-painted detailed fantasy MMORPG game inventory art. Strong readable silhouette at 48px, centered and filling 80% of square, warm highlights, painterly realistic materials. No lettering, no frame, no floor, no other objects. Transparent PNG."
+    },
+    {
+      "id": "pelt",
+      "prompt": "One isolated inventory item PNG with genuinely transparent alpha background. Subject: a flat tawny brown soft wolf fur pelt with irregular edges and four short leg flaps, fur side visible. Hand-painted detailed fantasy MMORPG game inventory art. Strong readable silhouette at 48px, centered and filling 80% of square, warm highlights, painterly realistic materials. No lettering, no frame, no floor, no other objects. Transparent PNG."
+    },
+    {
+      "id": "crystal",
+      "prompt": "Create one fantasy MMORPG game inventory icon PNG, genuinely transparent background. Subject: a cluster of three faceted icy blue quartz crystals. Hand-painted detailed painterly realistic materials, clean bold recognizable silhouette at 48px, centered filling 80% of square. Subtle bright rim highlights. No border, no words, no numbers, no scene, no floor, no other items. Transparent PNG."
+    },
+    {
+      "id": "ectoplasm",
+      "prompt": "Create one fantasy MMORPG game inventory icon PNG, genuinely transparent background. Subject: a small curling blob of translucent mint-green ghost ectoplasm with luminous wisps. Hand-painted detailed painterly realistic materials, clean bold recognizable silhouette at 48px, centered filling 80% of square. Subtle bright rim highlights. No border, no words, no numbers, no scene, no floor, no other items. Transparent PNG."
+    },
+    {
+      "id": "hide_thick",
+      "prompt": "One isolated inventory item PNG with genuinely transparent alpha background. Subject: a tightly rolled thick dark brown leather hide with thick layered cross section and simple leather strap, distinct from a flat fur pelt. Hand-painted detailed fantasy MMORPG game inventory art. Strong readable silhouette at 48px, centered and filling 80% of square, warm highlights, painterly realistic materials. No lettering, no frame, no floor, no other objects. Transparent PNG."
+    },
+    {
+      "id": "fang",
+      "prompt": "Single curved ivory wolf fang, hand-painted fantasy MMORPG inventory icon, transparent PNG, no text or frame."
+    },
+    {
+      "id": "silk",
+      "prompt": "One isolated inventory item PNG with genuinely transparent alpha background. Subject: a lustrous silver-white spool-like loose skein of spider silk thread, delicate looping strands, compact oval silhouette. Hand-painted detailed fantasy MMORPG game inventory art. Strong readable silhouette at 48px, centered and filling 80% of square, warm highlights, painterly realistic materials. No lettering, no frame, no floor, no other objects. Transparent PNG."
+    },
+    {
+      "id": "chitin",
+      "prompt": "Create one fantasy MMORPG game inventory icon PNG, genuinely transparent background. Subject: three overlapping amber-brown segmented insect shell plates with rough edges. Hand-painted detailed painterly realistic materials, clean bold recognizable silhouette at 48px, centered filling 80% of square. Subtle bright rim highlights. No border, no words, no numbers, no scene, no floor, no other items. Transparent PNG."
+    },
+    {
+      "id": "golem_heart",
+      "prompt": "Create one fantasy MMORPG game inventory icon PNG, genuinely transparent background. Subject: a rough stone sphere cracked open by glowing amber-orange veins, ancient golem heart. Hand-painted detailed painterly realistic materials, clean bold recognizable silhouette at 48px, centered filling 80% of square. Subtle bright rim highlights. No border, no words, no numbers, no scene, no floor, no other items. Transparent PNG."
+    },
+    {
+      "id": "orc_totem",
+      "prompt": "Create one fantasy MMORPG game inventory icon PNG, genuinely transparent background. Subject: a small crudely carved dark wooden tribal mask with red paint and two bone tusks, orc totem. Hand-painted detailed painterly realistic materials, clean bold recognizable silhouette at 48px, centered filling 80% of square. Subtle bright rim highlights. No border, no words, no numbers, no scene, no floor, no other items. Transparent PNG."
+    },
+    {
+      "id": "lich_dust",
+      "prompt": "Create one fantasy MMORPG game inventory icon PNG, genuinely transparent background. Subject: a small open black cloth pouch spilling violet magical ash and a few purple sparks. Hand-painted detailed painterly realistic materials, clean bold recognizable silhouette at 48px, centered filling 80% of square. Subtle bright rim highlights. No border, no words, no numbers, no scene, no floor, no other items. Transparent PNG."
+    },
+    {
+      "id": "soul_shard",
+      "prompt": "Create one fantasy MMORPG game inventory icon PNG, genuinely transparent background. Subject: a single blue teardrop-shaped soul shard holding a glowing white ghostly spark, distinct from a cluster of crystals. Hand-painted detailed painterly realistic materials, clean bold recognizable silhouette at 48px, centered filling 80% of square. Subtle bright rim highlights. No border, no words, no numbers, no scene, no floor, no other items. Transparent PNG."
+    }
+  ]
+}

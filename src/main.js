@@ -1,3 +1,15 @@
+import { createNav } from './nav.js';
+import { dressWeapon } from './weapon-models.js';
+import { createGroundLootView } from './ground-loot-view.js';
+import { buildPet } from './pets-models.js';
+import { PETS } from './pets.js';
+import { PROFESSIONS, PROF_LVL, SKILL_MAX_LV } from './data.js';
+import { migrateGrowth, skillsOf, skillLv, skillAt, profsFor, profError, learnError, skillReqLvl, learnCost } from './growth.js';
+import { bonusText, needsEnemy } from './skills.js';
+import { attachGuardian } from './guardian-model.js';
+import { createCampFx } from './camp-fx.js';
+import { spawnDef } from './combat.js';
+import { mapOffset } from './map-view.js';
 import * as THREE from 'three';
 import { CLASSES, SKILLS, ITEMS, MOBS, SHOP, GRADES, SLOTS, SETS, xpToNext, MAX_LEVEL } from './data.js';
 import { calcStats, enchValue, wearError, migrate, SAFE_ENCH, ENCH_CHANCE } from './stats.js';
@@ -35,16 +47,19 @@ skyDome.renderOrder = -1; skyDome.frustumCulled = false; scene.add(skyDome);
 scene.background = new THREE.Color(0x8aa4bc);
 addEventListener('resize', () => { renderer.setSize(innerWidth, innerHeight); camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); });
 
-const { ground, npcs: npcDefs, spawns } = buildWorld(scene);
+const { ground, npcs: npcDefs, spawns, camp } = buildWorld(scene);
+const campFx = createCampFx(scene, camp, emit);
+const nav=createNav(obstacles);
+const groundLoot=createGroundLootView(scene,heightAt);let pickUid=null;
 
 // ================= Профиль =================
 // Профиль целиком ведёт сервер: клиент только зеркалит authok/you и ничего не хранит локально.
 let P = null; // персонаж
 function applyProfile(np) {
   const first = !P;
-  P = migrate(np);
+  P = migrateGrowth(migrate(np));
   if (first) return;
-  refreshGear(); renderSkills();
+  refreshGear(); renderSkills(); if (!$('mentor').hidden) renderMentor();
   if (!$('shop').hidden) renderShop();
   // во время перетаскивания сетку не трогаем — иначе ячейка исчезнет из-под курсора
   if (drag) pendingInv = true; else renderInv();
@@ -59,16 +74,17 @@ const invCount = (id) => P.inv.find((i) => i.id === id)?.n || 0;
 let hero = null;
 const heroSt = { moving: false, attackT: 0, casting: false };
 function spawnHero() {
-  if (hero) scene.remove(hero);
+  if (hero) { hero.userData.disposeGuardian?.(); scene.remove(hero); }
   hero = buildHero(CLASSES[P.cls]);
   hero.position.set(P.x, heightAt(P.x, P.z), P.z);
   scene.add(hero);
   refreshGear();
+  attachGuardian(hero, P);
 }
 function lookOf() {
   const g = (sl) => ITEMS[P.equip[sl]], w = g('weapon'), a = g('armor');
   return {
-    cls: P.cls, lvl: P.lvl, w: w ? w.color : null, staff: !!w?.twoHand, ench: P.enc.weapon || 0,
+    cls: P.cls, lvl: P.lvl, w: w ? w.color : null, staff: !!w?.twoHand && !w?.bow && !w?.polearm, bow: !!w?.bow, polearm: !!w?.polearm, ench: P.enc.weapon || 0,
     body: a && a.grade !== 'none' ? a.color : CLASSES[P.cls].color, robe: !!a?.robe || (P.cls === 'mage' && !a), mat: matKind(a),
     gear: { head: g('head')?.color ?? null, legs: g('legs')?.color ?? null, gloves: g('gloves')?.color ?? null, feet: g('feet')?.color ?? null, shield: g('shield')?.color ?? null, helmKind: g('head')?.set ?? null,
       shieldKind: g('shield') ? (g('shield').grade === 'd' ? 'wood' : 'plate') : null, legKind: matKind(g('legs')) },
@@ -84,7 +100,7 @@ function matKind(it) {
 }
 function applyLook(obj, L) {
   const u = (v) => (v == null ? undefined : v);
-  obj.userData.setWeapon(u(L.w), L.staff, L.ench);
+  obj.userData.setWeapon(u(L.w), L.staff, L.ench); dressWeapon(obj,L);
   obj.userData.setBody(L.body ?? CLASSES[L.cls].color, L.robe, L.mat);
   obj.userData.setGear({ head: u(L.gear?.head), legs: u(L.gear?.legs), gloves: u(L.gear?.gloves), feet: u(L.gear?.feet), shield: u(L.gear?.shield), helmKind: L.gear?.helmKind, shieldKind: L.gear?.shieldKind, legKind: L.gear?.legKind });
 }
@@ -92,11 +108,12 @@ function refreshGear() { applyLook(hero, lookOf()); }
 
 // ================= Мобы =================
 // Мобов считает сервер: клиент строит модель по виду из «mobs» и двигает её по снапшотам.
+const petViews = new Map();
 const mobs = new Map(); // id → { id, def, obj, buf, ... }
 const MOB_LABEL_MAX = 20;
-function mobSeen(id, kind) {
+function mobSeen(id, kind, spawn = {}) {
   const have = mobs.get(id); if (have) return have;
-  const def = MOBS[kind]; if (!def) return null;
+  if (!MOBS[kind]) return null; const def = spawnDef(MOBS[kind], spawn);
   const obj = buildMob(def); obj.visible = false; scene.add(obj);
   const m = { id, def, obj, isMob: true, radius: (def.size || 1) * 0.9, hp: 100, dead: false, buf: [], a: 0, seen: 0, flash: 0, flashOn: false, dieT: null, st: { moving: false, attackT: 0, hitT: 0 } };
   obj.traverse((o) => { o.userData.mob = m; });
@@ -335,10 +352,10 @@ const respawn = () => netSend({ t: 'respawn' });
 function useSkill(id) {
   const sk = SKILLS[id];
   if (!sk || dead || cast) return;
-  if (!CLASSES[P.cls].skills.includes(id)) return;
-  if (P.lvl < sk.lvl) return log(`${sk.name}: нужен уровень ${sk.lvl}`, 'bad');
+  if (!skillsOf(P).includes(id)) return;
+  if (!skillLv(P, id)) return log(`${sk.name}: нужен уровень ${sk.lvl}`, 'bad');
   if ((cds[id] || 0) > performance.now()) return;
-  if (sk.kind === 'dmg') {
+  if (needsEnemy(sk)) {
     if (!target || target.dead || !(target.isMob || target.isPlayer)) return log('Нет цели', 'bad');
     // до цели ещё надо дойти: подводим героя, команда уйдёт при сближении
     if (flatDist(hero.position, target.obj.position) > sk.range + target.radius) { dest = null; attacking = true; pendingSkill = id; return; }
@@ -468,7 +485,22 @@ function onNet(m) {
       if (dead !== m.me.dead && !m.me.dead) { dead = false; heroSt.dieT = null; hero.rotation.z = 0; $('death').hidden = true; }
     }
   }
-  if (m.t === 'mobs') for (const [id, kind] of m.n) mobSeen(id, kind);
+  if(m.t === 'party' || m.t === 'pinvited') renderParty(m);
+  if(m.t === 'partychat') log(`[Группа] ${m.name}: ${m.text}`);
+  if(m.t === 'ground') groundLoot.receive(m.items);
+  if (m.t === 'pets') {
+    const live=new Set(m.list.map(p=>p.id));
+    for(const [id,p] of petViews) if(!live.has(id)) {scene.remove(p.obj);petViews.delete(id);}
+    for(const p of m.list) {
+      let view=petViews.get(p.id);
+      if(!view) {view={obj:buildPet(p.kind),st:{}};view.obj.position.set(p.x,p.y,p.z);scene.add(view.obj);petViews.set(p.id,view);}
+      Object.assign(view,p);view.st.moving=p.moving;view.st.speed=p.moving?1:0;view.st.attackT=p.attackT;
+    }
+    const own=m.list.filter(p=>p.owner===net.id);
+    $('petbox').hidden=!own.length;
+    $('pet-status').textContent=own.map(p=>`${PETS[p.kind].name}: ${p.hp}%`).join(' · ');
+  }
+  if (m.t === 'mobs') for (const [id, kind, spawn] of m.n) mobSeen(id, kind, spawn);
   if (m.t === 'you') applyProfile(m.p);
   if (m.t === 'ev') for (const e of m.e) onEvent(e);
   // сервер не принял перемещение — возвращаемся туда, где он нас видит
@@ -524,12 +556,14 @@ function lerpEntity(r, rt, dt) {
 // ---- события боя: сервер сообщает, что произошло, клиент это рисует ----
 const objOf = (e) => (e.m != null ? mobs.get(e.m) : e.p != null ? remotes.get(e.p) : null);
 function onEvent(e) {
+  if(e.k==='mob_fx'){const p=new THREE.Vector3(e.x,heightAt(e.x,e.z),e.z);ringFx(p,e.r||3,e.color||0x9050ff);if(e.text)banner(e.text);return;}
+  if(e.k==='stun'){heroSt.stunUntil=performance.now()+e.sec*1000;heroSt.stunned=true;dest=null;return;}
   if (e.k === 'msg') return log(e.text, e.cls);
   if (e.k === 'cd') { cds[e.id] = performance.now() + e.cd * 1000; return; }
   if (e.k === 'hit' || e.k === 'miss') {
     const t = objOf(e); if (!t) return;
     const mine = !e.by;
-    if (mine) heroSt.attackT = 1;
+    if (mine) { heroSt.attackT = 1; heroSt.combatUntil = performance.now() + 6000; }
     if (e.k === 'miss') return floatText(t.obj.position, 'Промах', '#aaaaaa');
     if (t.isMob) { t.flash = 0.12; t.st.hitT = 1; }
     emit('spark', t.obj.position, { n: e.crit ? 16 : 6, color: e.crit ? [0xffd040, 0xffffff] : [0xffffff, 0xffc080], speed: e.crit ? 8 : 5, up: 3, life: 0.4, size: e.crit ? 0.5 : 0.35, dy: 1.2 * (t.def?.size || 1) });
@@ -538,6 +572,7 @@ function onEvent(e) {
     return;
   }
   if (e.k === 'hurt') {
+    heroSt.combatUntil = performance.now() + 6000;
     heroSt.hitT = 1;
     if (e.dodge) return floatText(hero.position, 'Уклонение', '#a0c0ff');
     emit('spark', hero.position, { n: 6, color: [0xff4040, 0xffa0a0], speed: 4, up: 2, life: 0.35 });
@@ -565,6 +600,7 @@ function onEvent(e) {
     return;
   }
   if (e.k === 'lvl') {
+    hero.userData.levelUp?.({ ...heroSt, inCombat: performance.now() < (heroSt.combatUntil || 0) });
     banner(`Новый уровень: ${e.lvl}`); log(`Уровень повышен до ${e.lvl}!`, 'rare');
     ringFx(hero.position, 4, 0xffe070); pillarFx(hero.position, 0xffe070, 14);
     emit('spark', hero.position, { n: 60, color: [0xffe070, 0xffffff, 0xffb040], speed: 2, up: 9, life: 1.4, size: 0.4, grav: -2, spread: 1.4, swirl: 3, dy: 0.2, h: 1 });
@@ -580,6 +616,7 @@ function onEvent(e) {
   }
   if (e.k === 'cast') { cast = { id: e.id, t: e.t, total: e.t }; heroSt.casting = true; dest = null; return; }
   if (e.k === 'buff') {
+    if (e.id === 'battle_cry') { heroSt.skillPulse = (heroSt.skillPulse || 0) + 1; heroSt.skillAnimation = 'Skill01'; }
     const sk = SKILLS[e.id];
     buffs.push({ stat: sk.stat, mul: sk.mul, until: performance.now() + e.dur * 1000, name: sk.name });
     ringFx(hero.position, 3, sk.color);
@@ -735,6 +772,9 @@ renderer.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
 function pickAt(cx, cy) {
   ndc.set((cx / innerWidth) * 2 - 1, -(cy / innerHeight) * 2 + 1);
   ray.setFromCamera(ndc, camera);
+  const dropHit=ray.intersectObjects(groundLoot.rayTargets,true)[0];
+  if(dropHit){const uid=dropHit.object.userData.groundLoot,d=groundLoot.list.get(uid);if(d){pickUid=uid;dest=new THREE.Vector3(d.x,heightAt(d.x,d.z),d.z);stopAttack();return;}}
+
   const pickables = [...[...mobs.values()].filter((m) => !m.dead && m.obj.visible && flatDist(m.obj.position, hero.position) < 120).map((m) => m.obj), ...npcs.map((n) => n.obj), ...[...remotes.values()].filter((r) => r.obj.visible).map((r) => r.obj)];
   let hit = ray.intersectObjects(pickables, true)[0];
   // на телефоне палец толще модели — ищем ближайшего к точке касания моба в радиусе 36 px
@@ -777,11 +817,11 @@ renderer.domElement.addEventListener('pointermove', (e) => {
   const px = t.x, py = t.y; t.x = e.clientX; t.y = e.clientY;
   if (touches.size === 1) {
     if (Math.hypot(t.x - t.x0, t.y - t.y0) > 10) touchDrag = true;
-    if (touchDrag) { orbDX += (px - t.x) * 1.4; orbDY += (py - t.y) * 1.4; }
+    if (touchDrag) { orbDX += (t.x - px) * 1.4; orbDY += (t.y - py) * 1.4; }
   } else if (touches.size === 2) {
     const [a, b] = [...touches.values()], d = Math.hypot(a.x - b.x, a.y - b.y), mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
     if (pinch0 > 0 && d > 0) zoomAcc += Math.log(pinch0 / d);
-    orbDX += (mid0.x - mid.x) * 1.4; orbDY += (mid0.y - mid.y) * 1.4;
+    orbDX += (mid.x - mid0.x) * 1.4; orbDY += (mid.y - mid0.y) * 1.4;
     pinch0 = d; mid0 = mid;
   }
 });
@@ -796,7 +836,7 @@ renderer.domElement.addEventListener('pointercancel', touchEnd);
 addEventListener('pointerup', (e) => { if (e.button === 2) rmb = false; });
 addEventListener('pointermove', (e) => {
   if (!rmb) return;
-  cam.yaw -= (e.clientX - lastX) * 0.006; cam.pitch = THREE.MathUtils.clamp(cam.pitch + (e.clientY - lastY) * 0.005, -0.35, 1.5);
+  cam.yaw += (e.clientX - lastX) * 0.006; cam.pitch = THREE.MathUtils.clamp(cam.pitch - (e.clientY - lastY) * 0.005, -0.35, 1.5);
   lastX = e.clientX; lastY = e.clientY;
 });
 // трекпад: два пальца — орбита, щипок (приходит как Ctrl+колесо) — зум; колесо мыши — зум
@@ -813,7 +853,7 @@ function applyCamInput(dt) {
   const kk = 1 - Math.exp(-dt * 22);
   const dx = orbDX * kk, dy = orbDY * kk, dz = zoomAcc * kk;
   orbDX -= dx; orbDY -= dy; zoomAcc -= dz;
-  cam.yaw -= dx * 0.005;
+  cam.yaw += dx * 0.005;
   cam.pitch = THREE.MathUtils.clamp(cam.pitch - dy * 0.004, -0.35, 1.5);
   cam.dist = THREE.MathUtils.clamp(cam.dist * Math.exp(dz), 4, 70);
 }
@@ -824,18 +864,20 @@ addEventListener('gesturechange', (e) => { e.preventDefault(); zoomAcc += Math.l
 addEventListener('keydown', (e) => {
   if (!P || e.target.tagName === 'INPUT') return;
   keys[e.code] = true;
-  const map = { Digit1: 0, Digit2: 1, Digit3: 2 };
-  if (e.code in map) useSkill(CLASSES[P.cls].skills[map[e.code]]);
-  if (e.code === 'Digit4') useItem('potion_hp');
-  if (e.code === 'Digit5') useItem('potion_mp');
+  const map = { Digit1: 0, Digit2: 1, Digit3: 2, Digit4: 3, Digit5: 4 };
+  if (e.code in map) useSkill(skillsOf(P)[map[e.code] + (e.shiftKey ? 5 : 0)]);
+  if (e.code === 'Digit6') useItem('potion_hp');
+  if (e.code === 'Digit7') useItem('potion_mp');
   if (e.code === 'KeyV') { cam.yaw = hero.rotation.y + Math.PI; cam.pitch = 0.55; cam.dist = 18; }
   if (e.code === 'Enter') { e.preventDefault(); $('chatin').focus(); return; }
   if (e.code === 'KeyI') toggle('inv');
   if (e.code === 'KeyC') toggle('char');
   if (e.code === 'KeyM') toggle('bigmap');
+  if (e.code === 'KeyP') toggle('pwin');
+  if (e.code === 'KeyX') netSend({t:'sit'});
   if (e.code === 'Tab') { e.preventDefault(); nextTarget(); }
   if (e.code === 'KeyF' && target?.isMob) { attackTarget(target); dest = null; }
-  if (e.code === 'Escape') { for (const id of ['inv', 'char', 'shop', 'tp', 'bigmap', 'priest']) $(id).hidden = true; enchMode = null; setTarget(null); }
+  if (e.code === 'Escape') { for (const id of ['inv', 'char', 'shop', 'tp', 'bigmap', 'priest', 'mentor']) $(id).hidden = true; enchMode = null; setTarget(null); }
 });
 addEventListener('keyup', (e) => { keys[e.code] = false; });
 function nextTarget() {
@@ -874,6 +916,7 @@ function menuClick(e) {
   if (a === 'inv') toggle('inv');
   if (a === 'char') toggle('char');
   if (a === 'map') toggle('bigmap');
+  if (a === 'party') toggle('pwin');
   if (a === 'cam') { cam.yaw = hero.rotation.y + Math.PI; cam.pitch = 0.55; cam.dist = 18; }
   if (a === 'fs') goFullscreen();
 }
@@ -902,10 +945,7 @@ if (MOBILE) {
 // ================= Движение =================
 function moveEntity(pos, dir, dist, radius) {
   pos.x += dir.x * dist; pos.z += dir.z * dist;
-  for (const o of obstacles) {
-    const dx = pos.x - o.x, dz = pos.z - o.z, d = Math.hypot(dx, dz), min = o.r + radius;
-    if (d < min && d > 1e-4) { pos.x = o.x + dx / d * min; pos.z = o.z + dz / d * min; }
-  }
+  nav.resolveMove(pos,radius);
   const lim = MAP / 2 - 20;
   if (pos.x < DUNGEON.x0 - 100) { pos.x = THREE.MathUtils.clamp(pos.x, -lim, lim); pos.z = THREE.MathUtils.clamp(pos.z, -lim, lim); }
   pos.y = heightAt(pos.x, pos.z);
@@ -913,9 +953,10 @@ function moveEntity(pos, dir, dist, radius) {
 const tmp = new THREE.Vector3();
 function updateHero(dt) {
   const s = stats();
-  heroSt.moving = false;
+  heroSt.moving = false;heroSt.sitting=!!P.sitting;
   heroSt.attackT = Math.max(0, heroSt.attackT - dt * 3);
-  if (dead) return;
+  heroSt.stunned=performance.now()<(heroSt.stunUntil||0);
+  if (dead || heroSt.stunned) return;
   // полоса каста: время отмеряет сервер, клиент только дорисовывает
   if (cast) {
     cast.t -= dt;
@@ -926,7 +967,7 @@ function updateHero(dt) {
   // WASD — прямое управление относительно камеры
   const kx = (keys.KeyD ? 1 : 0) - (keys.KeyA ? 1 : 0) + joy.x, kz = (keys.KeyS ? 1 : 0) - (keys.KeyW ? 1 : 0) + joy.y;
   if (Math.abs(kx) + Math.abs(kz) > 0.15) {
-    dest = null; stopAttack(); talkTo = null;
+    dest = null; stopAttack(); talkTo = null; pendingSkill=null;
     const f = new THREE.Vector3(Math.sin(cam.yaw + Math.PI), 0, Math.cos(cam.yaw + Math.PI)), r = new THREE.Vector3(-f.z, 0, f.x);
     const amt = Math.min(1, Math.hypot(kx, kz));
     const dir = f.multiplyScalar(-kz).add(r.multiplyScalar(kx)).normalize();
@@ -1050,20 +1091,27 @@ function renderHud() {
   for (const el of document.querySelectorAll('#skills .slot[data-skill]')) {
     const id = el.dataset.skill, left = Math.max(0, (cds[id] || 0) - now) / 1000;
     el.querySelector('.cd').style.height = `${(left / SKILLS[id].cd) * 100}%`;
-    el.classList.toggle('locked', P.lvl < SKILLS[id].lvl);
+    el.classList.toggle('locked', !skillLv(P, id));
   }
   for (const el of document.querySelectorAll('#skills .slot[data-item]')) el.querySelector('.n').textContent = invCount(el.dataset.item);
   $('castbar').hidden = !cast;
   if (cast) { const total = cast.total || 3; $('castbar').firstElementChild.style.width = `${(1 - cast.t / total) * 100}%`; $('castbar').lastElementChild.textContent = cast.id === 'escape' ? 'Свиток возврата' : SKILLS[cast.id].name; }
   $('buffs').innerHTML = buffs.filter((b) => b.until > now).map((b) => `<span>${b.name} ${Math.ceil((b.until - now) / 1000)}с</span>`).join('');
 }
+let skillPage = 0;
 function renderSkills() {
-  const c = CLASSES[P.cls];
+  const all = skillsOf(P), pages = Math.ceil(all.length / 5);
+  skillPage = Math.min(skillPage, pages - 1);
+  const c = { skills: MOBILE ? all.slice(skillPage * 5, skillPage * 5 + 5) : all };
+  $('skills').classList.toggle('many', !MOBILE && all.length > 5);
   $('skills').innerHTML = c.skills.map((id, i) => `<div class="slot" data-skill="${id}" title="${SKILLS[id].name} · мана ${SKILLS[id].mp} · перезарядка ${SKILLS[id].cd} с · с ${SKILLS[id].lvl} ур.">${png(id) ? `<i class="ico">${png(id)}</i>` : `<i style="background:#${SKILLS[id].color.toString(16).padStart(6, '0')}"></i>`}<b>${i + 1}</b><small>${SKILLS[id].name}</small><div class="cd"></div></div>`).join('')
-    + ['potion_hp', 'potion_mp'].map((id, i) => `<div class="slot" data-item="${id}" title="${ITEMS[id].name}">${png(id) ? `<i class="ico">${png(id)}</i>` : `<i style="background:#${ITEMS[id].color.toString(16).padStart(6, '0')};border-radius:50%"></i>`}<b>${i + 4}</b><small>${ITEMS[id].name}</small><span class="n"></span></div>`).join('');
+    + `<button class="slot" data-attack title="Обычная атака (F)"><b>F</b><small>Атака</small></button>` + (MOBILE && pages > 1 ? `<button class="slot" data-page><small>Умения ${skillPage + 1}/${pages} ⇅</small></button>` : '')
+    + ['potion_hp', 'potion_mp'].map((id, i) => `<div class="slot" data-item="${id}" title="${ITEMS[id].name}">${png(id) ? `<i class="ico">${png(id)}</i>` : `<i style="background:#${ITEMS[id].color.toString(16).padStart(6, '0')};border-radius:50%"></i>`}<b>${i + 6}</b><small>${ITEMS[id].name}</small><span class="n"></span></div>`).join('');
 }
 $('skills').addEventListener('click', (e) => {
   const s = e.target.closest('.slot'); if (!s) return;
+  if (s.hasAttribute('data-page')) { skillPage = (skillPage + 1) % Math.ceil(skillsOf(P).length / 5); return renderSkills(); }
+  if (s.hasAttribute('data-attack')) { if (!target) nextTarget(); if (target) attackTarget(target); return; }
   if (s.dataset.skill) useSkill(s.dataset.skill); else useItem(s.dataset.item);
 });
 // ---- иконки предметов (SVG, цвет — цвет предмета) ----
@@ -1093,7 +1141,7 @@ const hex = (c) => '#' + c.toString(16).padStart(6, '0');
 const PNG = new Set();
 fetch('assets/icons/index.json').then((r) => r.json()).then((a) => { a.forEach((id) => PNG.add(id)); if (P) renderSkills(); }).catch(() => { /* нет иконок — не беда */ });
 const png = (id) => (PNG.has(id) ? `<img class="png" src="assets/icons/${id}.png" alt="">` : null);
-const icon = (it) => png(it.id) || `<svg viewBox="0 0 24 24" fill="currentColor" style="color:${hex(it.color)}">${ICON[iconKind(it)]}</svg>`;
+const icon = (it) => (it.mat ? `<img class="png" src="assets/icons/resources/${it.id}.png" alt="${it.name}">` : png(it.id)) || `<svg viewBox="0 0 24 24" fill="currentColor" style="color:${hex(it.color)}">${ICON[iconKind(it)]}</svg>`;
 const sw = (c, it) => it ? `<i class="sw ico">${icon(it)}</i>` : `<i class="sw" style="background:${hex(c)}"></i>`;
 const STAT_NAMES = { patk: 'Физ. атака', matk: 'Маг. атака', pdef: 'Физ. защита', mdef: 'Маг. защита', hp: 'Здоровье', mp: 'Мана', crit: 'Крит. шанс', speed: 'Скорость', cast: 'Скорость каста' };
 const fmtBonus = (k, v) => `${STAT_NAMES[k]} ${v > 0 ? '+' : ''}${k === 'crit' || k === 'cast' ? Math.round(v * 100) + '%' : v}`;
@@ -1162,7 +1210,7 @@ function renderChar() {
   const r = (k, v, hint = '') => `<div class="st" title="${hint}"><span>${k}</span><b>${v}</b></div>`;
   const need = xpToNext(P.lvl);
   $('char-body').innerHTML = `
-    <div class="chead"><div class="lv">${P.lvl}</div><div><b>${P.name}</b><small>${c.name} · ${TOWNS.find((t) => t.id === P.home)?.name || ''}</small></div></div>
+    <div class="chead"><div class="lv">${P.lvl}</div><div><b>${P.name}</b><small>${PROFESSIONS[P.prof]?.name || c.name} · ${TOWNS.find((t) => t.id === P.home)?.name || ''}</small></div></div>
     ${r('Здоровье', `${Math.round(P.hp)} / ${s.maxHp}`)}${r('Мана', `${Math.round(P.mp)} / ${s.maxMp}`)}${r('Опыт', P.lvl >= MAX_LEVEL ? 'максимум' : `${P.xp} / ${need} (${((P.xp / need) * 100).toFixed(1)}%)`)}
     <h4>Основные</h4>
     <div class="attrs">${r('СИЛ', A.str, 'Сила — физическая атака')}${r('ЛОВ', A.dex, 'Ловкость — скорость атаки, крит, точность, уклонение, бег')}${r('ВЫН', A.con, 'Выносливость — здоровье, переносимый вес')}${r('ИНТ', A.int, 'Интеллект — магическая атака')}${r('МДР', A.wit, 'Мудрость — скорость каста')}${r('ДУХ', A.men, 'Дух — мана, магическая защита')}</div>
@@ -1175,6 +1223,7 @@ function renderChar() {
       ${r('Скор. каста', `${Math.round(s.cast * 100)}%`)}${r('Скорость', Math.round(s.speed))}
       ${r('Дальность', s.range)}${r('Вес', `${s.load} / ${s.cap}`)}
     </div>
+    <h4>Автозаряды</h4><button data-shot="p">Физические: ${P.shots?.p ? 'вкл' : 'выкл'}</button> <button data-shot="m">Магические: ${P.shots?.m ? 'вкл' : 'выкл'}</button>
     <h4>Прочее</h4>
     <div class="cols">${r('Убито мобов', P.kills)}${r('Карма', `<span style="color:${P.karma > 0 ? '#ff6060' : 'inherit'}">${P.karma || 0}</span>`)}${r('PvP', P.pvp || 0)}${r('PK', P.pk || 0)}</div>
     ${s.sets.length ? `<h4>Комплекты</h4>${s.sets.map((st) => `<div class="st"><span>${st.name} ${st.have}/${st.parts.length}</span><b class="${st.have === st.parts.length ? 'good' : ''}">${Object.entries(st.bonus).map(([k, v]) => fmtBonus(k, v)).join(', ')}</b></div>`).join('')}` : ''}`;
@@ -1248,6 +1297,7 @@ for (const b of document.querySelectorAll('[data-close]')) b.addEventListener('c
 for (const b of document.querySelectorAll('[data-open]')) b.addEventListener('click', () => toggle(b.dataset.open));
 
 function openNpc(n) {
+  if (n.role === 'mentor') { renderMentor(); $('mentor').hidden = false; }
   if (n.role === 'merchant') { renderShop('buy'); $('shop').hidden = false; }
   if (n.role === 'priest') {
     const k = P.karma || 0, cost = karmaWashCost(k);
@@ -1294,7 +1344,7 @@ function drawMap(cv, big) {
   const x = cv.getContext('2d'), W = cv.width, H = cv.height;
   const inCrypt = hero.position.x > DUNGEON.x0 - 100;
   x.fillStyle = '#10141a'; x.fillRect(0, 0, W, H);
-  if (inCrypt) {
+  if (inCrypt && big) {
     const size = DUNGEON.cell * DUNGEON.n, k = W / size;
     x.fillStyle = '#2a2628'; x.fillRect(0, 0, W, H);
     for (const m of mobs.values()) if (!m.dead && m.obj.position.x > DUNGEON.x0 - 100) { x.fillStyle = m.def.boss ? '#c060ff' : '#c04040'; x.fillRect((m.obj.position.x - DUNGEON.x0) * k - 2, (m.obj.position.z - DUNGEON.z0) * k - 2, 4, 4); }
@@ -1304,15 +1354,16 @@ function drawMap(cv, big) {
   }
   const scale = big ? W / MAP : W / 300; // мини-карта — окрестность 300 м
   const cx = big ? 0 : hero.position.x, cz = big ? 0 : hero.position.z;
-  const P2 = (px, pz) => [(px - cx) * scale + W / 2, (pz - cz) * scale + H / 2];
+  const yaw = big ? 0 : cam.yaw;
+  const P2 = (px, pz) => { const [dx, dz] = mapOffset(px - cx, pz - cz, yaw); return [dx * scale + W / 2, dz * scale + H / 2]; };
   for (const z of ZONES) { const [a, b] = P2(z.x, z.z); x.fillStyle = `rgba(${z.ground.map((v) => (v * 255) | 0).join(',')},0.7)`; x.beginPath(); x.arc(a, b, z.r * scale, 0, 7); x.fill(); }
   for (const t of TOWNS) { const [a, b] = P2(t.x, t.z); x.fillStyle = '#d8cfb8'; x.beginPath(); x.arc(a, b, t.r * scale, 0, 7); x.fill(); if (big) { x.fillStyle = '#fff'; x.font = '12px sans-serif'; x.textAlign = 'center'; x.fillText(t.name, a, b - t.r * scale - 6); } }
   if (big) for (const z of ZONES) { const [a, b] = P2(z.x, z.z); x.fillStyle = '#fff'; x.font = '12px sans-serif'; x.textAlign = 'center'; x.fillText(`${z.name} (${z.lv})`, a, b); }
-  { const [a, b] = P2(CRYPT.x, CRYPT.z); x.fillStyle = '#9a70ff'; x.fillRect(a - 3, b - 3, 6, 6); if (big) { x.fillStyle = '#c0a0ff'; x.fillText('Склеп', a, b - 8); } }
+  { const [a, b] = P2(inCrypt ? dungeonExit.x : CRYPT.x, inCrypt ? dungeonExit.z : CRYPT.z); x.fillStyle = '#9a70ff'; x.fillRect(a - 3, b - 3, 6, 6); if (big) { x.fillStyle = '#c0a0ff'; x.fillText('Склеп', a, b - 8); } }
   if (!big) for (const m of mobs.values()) if (!m.dead && m.obj.visible) { const [a, b] = P2(m.obj.position.x, m.obj.position.z); x.fillStyle = m.def.aggro ? '#ff5050' : '#ffc060'; x.fillRect(a - 1.5, b - 1.5, 3, 3); }
   for (const n of npcs) { const [a, b] = P2(n.x, n.z); x.fillStyle = '#80d0ff'; x.fillRect(a - 2, b - 2, 4, 4); }
   const [a, b] = P2(hero.position.x, hero.position.z);
-  x.save(); x.translate(a, b); x.rotate(-hero.rotation.y + Math.PI);
+  x.save(); x.translate(a, b); x.rotate(-hero.rotation.y + Math.PI + yaw);
   x.fillStyle = '#fff'; x.beginPath(); x.moveTo(0, -6); x.lineTo(4, 5); x.lineTo(-4, 5); x.fill(); x.restore();
 }
 
@@ -1324,13 +1375,23 @@ function loop() {
   const dt = Math.min(clock.getDelta(), 0.05), t = clock.elapsedTime;
   if (!P) { renderer.render(scene, camera); cam.yaw += dt * 0.05; placeCamera(new THREE.Vector3(TOWNS[0].x, 10, TOWNS[0].z), 60); return; }
   frame++;
+  const hx = hero.position.x, hz = hero.position.z;
   updateHero(dt);
+  heroSt.travelSpeed = Math.hypot(hero.position.x - hx, hero.position.z - hz) / Math.max(dt, 0.001);
+  heroSt.speed = Math.min(1, heroSt.travelSpeed / Math.max(stats().speed, 0.1));
+  heroSt.inCombat = performance.now() < (heroSt.combatUntil || 0);
   updateMobs(dt, t);
+  for(const p of petViews.values()) {p.obj.position.lerp(new THREE.Vector3(p.x,p.y,p.z),1-Math.exp(-dt*15));p.obj.rotation.y=p.r;p.obj.userData.anim(t,p.st,dt);}
+
   updateRemotes(dt, t);
   updateGuards(dt, t);
   heroSt.hitT = Math.max(0, (heroSt.hitT || 0) - dt * 5);
   if (heroSt.dieT != null) { heroSt.dieT += dt; const k = Math.min(1, heroSt.dieT * 3.5); hero.rotation.z = (Math.PI / 2) * k * k; }
-  hero.userData.anim(t, heroSt);
+  hero.userData.anim(t, heroSt, dt);
+  campFx.update(dt, t, hero.position);
+  groundLoot.update(t);
+  if(pickUid!=null){const d=groundLoot.list.get(pickUid);if(!d)pickUid=null;else if(flatDist(hero.position,d)<2.5){netSend({t:'pick',uid:pickUid});pickUid=null;}}
+
   ambientFx(dt);
   updateFx(dt);
   updateParticles(dt);
@@ -1367,7 +1428,7 @@ function start(p) {
   spawnHero();
   teleportTo(P.x, P.z);
   renderSkills(); renderInv(); setChatTab('all');
-  log(`Добро пожаловать, ${P.name}! ЛКМ — идти/выбрать цель (второй клик — атака), ПКМ или два пальца — камера, щипок/колесо — зум, V — сброс камеры, 1–3 — умения, 4–5 — зелья, Tab — цель, I — инвентарь, C — персонаж, M — карта, Enter — чат.`);
+  log(`Добро пожаловать, ${P.name}! ЛКМ — идти/выбрать цель (второй клик — атака), ПКМ или два пальца — камера, щипок/колесо — зум, V — сброс камеры, 1–5 и Shift+1–5 — умения, F — атака, 6–7 — зелья, P — группа, Tab — цель, I — инвентарь, C — персонаж, M — карта, Enter — чат.`);
   log('Поговорите с Хранителем врат, чтобы перенестись в зону охоты, и с Торговцем — за снаряжением.');
 }
 function startMsg(text, bad) { const el = $('start-msg'); if (el) { el.textContent = text || ''; el.classList.toggle('bad', !!bad); } }
@@ -1404,3 +1465,51 @@ startReady();
 netConnect();
 // хук для автотестов: dev-сервер или ?test
 if (import.meta.env.DEV || location.search.includes('test')) window.__g = { get P() { return P; }, mobs, get hero() { return hero; }, cam, teleportTo, dev: (o) => netSend({ t: 'dev', ...o }), goTo: (x, z) => netSend({ t: 'dev', x, z }), useSkill, joy, useItem, openNpc, equipIdx, unequip, enchant, stats, get enchMode() { return enchMode; }, renderInv, remotes, net, npcs, respawn, netSend, get dead() { return dead; }, get target() { return target; }, set target(v) { setTarget(v); }, attack() { attackTarget(target); } };
+
+function renderMentor() {
+  const pr = PROFESSIONS[P.prof];
+  let h = `<div class="msp">SP: <b>${P.sp || 0}</b></div><h4>Профессия</h4>`;
+  if (pr) h += `<p>Ваша профессия: <b>${pr.name}</b> — ${pr.desc.toLowerCase()}.</p>`;
+  else {
+    h += `<p>С ${PROF_LVL} уровня можно выбрать путь. Выбор один раз и навсегда.</p><div class="profs">`;
+    h += profsFor(P).map((p) => {
+      const err = profError(P, p.id);
+      const bon = bonusText(p.bonus);
+      return `<div class="prof"><b>${p.name}</b><small>${p.desc}</small><small>${bon}</small><small>Умения: ${p.skills.map((id) => `${SKILLS[id].name} (${SKILLS[id].lvl} ур.)`).join(', ')}</small>`
+        + `${err ? `<small class="bad">${err}</small>` : ''}<button data-prof="${p.id}" ${err ? `disabled title="${err}"` : ''}>Выбрать</button></div>`;
+    }).join('') + '</div>';
+  }
+  h += '<h4>Умения</h4>' + skillsOf(P).map((id) => {
+    const sk = SKILLS[id], lv = skillLv(P, id), nx = lv + 1, err = learnError(P, id);
+    const next = nx > SKILL_MAX_LV ? 'максимальный уровень' : `следующий: с ${skillReqLvl(id, nx)} ур., ${learnCost(id, nx)} SP`;
+    return `<div class="row" data-skrow="${id}"><i style="background:${hex(sk.color)}"></i><div><b>${sk.name}</b><small>ур. ${lv} / ${SKILL_MAX_LV} · ${next}</small></div>`
+      + `<button data-learn="${id}" ${err ? `disabled title="${err}"` : ''}>Изучить</button></div>`;
+  }).join('');
+  $('mentor-body').innerHTML = h;
+}
+
+$('mentor').addEventListener('click', e => {
+  const p = e.target.closest('[data-prof]'), l = e.target.closest('[data-learn]');
+  if (p) netSend({ t: 'profession', id: p.dataset.prof });
+  if (l) netSend({ t: 'learn', id: l.dataset.learn });
+});
+
+$('petbox').addEventListener('click',e=>{const b=e.target.closest('[data-petfollow]');if(b)netSend({t:'petfollow',follow:b.dataset.petfollow==='yes'});});
+
+function renderParty(m) {
+  const box=$('party-members');
+  if(m.t==='pinvited'){$('party-invite').textContent=`${m.name} приглашает в группу`;$('party-reply').hidden=false;$('pwin').hidden=false;return;}
+  box.replaceChildren();
+  for(const member of m.members){const row=document.createElement('div');row.textContent=`${member.id===m.leader?'★ ':''}${member.name} · ${member.lvl} ур.`;
+    if(m.leader===net.id&&member.id!==net.id)for(const [cmd,label]of [['pkick','Исключить'],['plead','Лидер']]){const b=document.createElement('button');b.textContent=label;b.onclick=()=>netSend({t:cmd,id:member.id});row.append(b);}box.append(row);}
+}
+$('party-send').onclick=()=>netSend({t:'pinvite',name:$('party-name').value.trim()});
+$('party-leave').onclick=()=>netSend({t:'pleave'});
+$('party-accept').onclick=()=>{netSend({t:'paccept'});$('party-reply').hidden=true;};
+$('party-decline').onclick=()=>{netSend({t:'pdecline'});$('party-reply').hidden=true;};
+$('party-chat-send').onclick=()=>{netSend({t:'pchat',text:$('party-chat').value});$('party-chat').value='';};
+
+function releaseInput(){for(const k of Object.keys(keys))keys[k]=false;joy.x=joy.y=0;rmb=false;touches.clear();pendingSkill=null;}
+addEventListener('blur',releaseInput);document.addEventListener('visibilitychange',()=>{if(document.hidden)releaseInput();});
+
+$('char-body').addEventListener('click',e=>{const b=e.target.closest('[data-shot]');if(b&&P)netSend({t:'shots',school:b.dataset.shot,enabled:!P.shots?.[b.dataset.shot]});});

@@ -242,6 +242,9 @@
   #update[hidden]{display:none}
   #rotate{display:none}
   @media (orientation:portrait){ .mob #rotate{display:flex;position:fixed;inset:0;z-index:20;background:#000;color:var(--gold);align-items:center;justify-content:center;text-align:center;font-size:18px;padding:30px} }
+#skills.many{display:grid;grid-template-columns:repeat(5,54px);max-width:320px}
+#mentor{width:460px}#mentor .profs{display:grid;grid-template-columns:1fr 1fr;gap:8px}#mentor .prof{display:flex;flex-direction:column;border:1px solid var(--line);padding:8px}#mentor small{display:block}.mob #mentor{width:auto}
+#petbox{position:absolute;left:12px;top:185px;padding:6px;font-size:11px}#petbox button{font-size:10px}.mob #petbox{top:110px;left:8px;max-width:180px}
 </style>
 </head>
 <body>
@@ -271,8 +274,8 @@
   <label>Шрифт <input type="range" min="10" max="16" step="1" data-set="size" /></label>
 </div><div id="logbox" data-tab="all"></div><div id="chatrow"><input id="chatin" maxlength="160" enterkeyhint="send" autocomplete="off" /><button id="chatsend" type="button">&gt;</button><button id="chatclose" type="button">x</button></div></div>
 <div id="joy"><i></i></div>
-<div id="menu"><button data-act="char">Персонаж <kbd>C</kbd></button><button data-act="inv">Инвентарь <kbd>I</kbd></button><button data-act="map">Карта <kbd>M</kbd></button><button data-act="cam">Сброс камеры <kbd>V</kbd></button></div>
-<div id="mbtns"><button class="big" data-act="attack">Атака</button><button data-act="next">Цель</button><button data-act="inv">Вещи</button><button data-act="char">Перс.</button><button data-act="map">Карта</button><button data-act="cam">Камера</button></div>
+<div id="menu"><button data-act="char">Персонаж <kbd>C</kbd></button><button data-act="inv">Инвентарь <kbd>I</kbd></button><button data-act="map">Карта <kbd>M</kbd></button><button data-act="party">Группа <kbd>P</kbd></button><button data-act="cam">Сброс камеры <kbd>V</kbd></button></div>
+<div id="mbtns"><button class="big" data-act="attack">Атака</button><button data-act="next">Цель</button><button data-act="inv">Вещи</button><button data-act="char">Перс.</button><button data-act="map">Карта</button><button data-act="party">Группа</button><button data-act="cam">Камера</button></div>
 <div id="fshint" hidden><div class="panel"><b style="color:var(--gold)">Игра на весь экран на iPhone</b><ol><li>Нажмите «Поделиться» (квадрат со стрелкой) внизу или вверху Safari.</li><li>Выберите «На экран Домой».</li><li>Откройте игру с иконки — без панелей браузера.</li></ol>Вход сохранится — логиниться заново не придётся.<br><br><button id="fshint-ok">Понятно</button></div></div>
 <div id="update" hidden>Вышло обновление <button id="update-go">Обновить</button></div>
 <div id="rotate">Поверни телефон горизонтально</div>
@@ -321,6 +324,9 @@
     <div id="start-msg"></div>
   </div>
 </div>
+<div id="pwin" class="panel win" hidden><h3>Группа <button data-close>Закрыть</button></h3><div class="body"><div id="party-members"></div><input id="party-name" placeholder="Имя игрока"><button id="party-send">Пригласить</button><button id="party-leave">Выйти</button><div id="party-reply" hidden><span id="party-invite"></span><button id="party-accept">Принять</button><button id="party-decline">Отказать</button></div><input id="party-chat" placeholder="Сообщение группе"><button id="party-chat-send">Отправить</button></div></div>
+<div id="petbox" class="panel" hidden><span id="pet-status"></span><button data-petfollow="no">Атаковать цель</button><button data-petfollow="yes">Ко мне</button></div>
+<div id="mentor" class="panel win" hidden><h3>Наставник <button data-close>Закрыть</button></h3><div class="body" id="mentor-body"></div></div>
 <script type="module" src="./src/main.js"></script>
 </body>
 </html>
